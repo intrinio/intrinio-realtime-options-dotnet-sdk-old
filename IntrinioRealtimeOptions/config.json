@@ -1,0 +1,29 @@
+﻿{
+	"Config": {
+		"ApiKey": "OjEyOTk1MzNkMjEwZmY4MmYxNTRiMzhhYmY3NWIwOGYy",
+		"Provider": "OPRA_FIREHOSE",
+		"Symbols": [ "lobby" ],
+		"NumThreads": 8
+	},
+	"Serilog": {
+		"Using": [ "Serilog.Sinks.Console", "Serilog.Sinks.File" ],
+		"MinimumLevel": {
+			"Default": "Information",
+			"Override": {
+				"Microsoft": "Warning",
+				"System": "Warning"
+			}
+		},
+		"WriteTo": [
+			{ "Name": "Console" },
+			{
+				"Name": "File",
+				"Args": {
+					"path": "intrinio-realtime-options-client.log",
+					"fileSizeLimitBytes": 10000000,
+					"rollOnFileSizeLimit": true
+				}
+			}
+		]
+	}
+}
