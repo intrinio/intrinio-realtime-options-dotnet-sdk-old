@@ -10,6 +10,7 @@ module Config =
     type Config () =
         member val ApiKey : string = null with get, set
         member val Provider : Provider = Provider.NONE with get, set
+        member val IPAddress : string = null with get, set
         member val Symbols: string[] = [||] with get, set
         member val NumThreads: int = 4 with get, set
 

@@ -29,6 +29,7 @@ type Client(onQuote : Action<Quote>) =
         match config.Provider with
         | Provider.OPRA -> "https://realtime-options.intrinio.com/auth?api_key=" + config.ApiKey
         | Provider.OPRA_FIREHOSE -> "https://realtime-options-firehose.intrinio.com/auth?api_key=" + config.ApiKey
+        | Provider.MANUAL -> "http://" + config.IPAddress + "/auth?api_key=" + config.ApiKey
         | _ -> failwith "Provider not specified!"
 
     let parseMessage (bytes: byte[]) : Quote =
@@ -45,7 +46,7 @@ type Client(onQuote : Action<Quote>) =
         Log.Information("Starting heartbeat")
         while not(ct.IsCancellationRequested) && not(isNull(ws)) && isReady do
             try
-                Thread.Sleep(20000)
+                Thread.Sleep(20000) //send heartbeat every 20 sec
                 Log.Information("Messages received: (data = {0}, text = {1}, queue depth = {2})", dataMsgCount, textMsgCount, data.Count)
                 let datum : byte[] = data.Take(ct)
                 let quote : Quote = parseMessage(datum)
@@ -57,7 +58,7 @@ type Client(onQuote : Action<Quote>) =
             with :? OperationCanceledException -> ()
 
     let heartbeat : Thread =
-        new Thread(new ThreadStart(heartbeatFn))
+        new Thread(new ThreadStart(heartbeatFn), IsBackground = true)
 
     let threadFn () : unit =
         let ct = ctSource.Token
@@ -111,14 +112,18 @@ type Client(onQuote : Action<Quote>) =
                         let _token : string = reader.ReadToEnd()
                         Log.Information("Authorization successful")
                         _token
-                    | _ -> raise (Exception("Authorization Failure: " + response.StatusCode.ToString()))
-            with 
-            | _ -> reraise()
+                    | _ -> raise (AccessViolationException("Authorization Failure: " + response.StatusCode.ToString()))
+            with
+            | :? WebException | :? IOException as exn ->
+                Log.Error("Authorization Failure: {0}. The authorization server is likey offline. Please make sure you're trying to connect during market hours.", exn.Message); Environment.Exit(-1); null
+            | :? AccessViolationException as exn -> Log.Error("{0). The authorization key you provided is likely incorrect.", exn.Message); Environment.Exit(-1); null
+            | _ as exn -> Log.Error("Unidentified Authorization Failure: {0}", exn.Message); Environment.Exit(-1); null
 
         let wsUrl =
             match config.Provider with
             | Provider.OPRA -> "wss://realtime-options.intrinio.com/socket/websocket?vsn=1.0.0&token=" + token
             | Provider.OPRA_FIREHOSE -> "wss://realtime-options-firehose.intrinio.com/socket/websocket?vsn=1.0.0&token=" + token
+            | Provider.MANUAL -> "ws://" + config.IPAddress + "/socket/websocket?vsn=1.0.0&token=" + token
             | _ -> failwith "Provider not specified!"
 
         Log.Information("Connecting...")
