@@ -36,9 +36,9 @@ type Client(onQuote : Action<Quote>) =
         {
             Type = "trade"
             Symbol = Encoding.ASCII.GetString(bytes, 0, 21)
-            Price = BitConverter.ToSingle(bytes, 21)
-            Size = BitConverter.ToUInt32(bytes, 25)
-            Timestamp = BitConverter.ToSingle(bytes, 29)
+            Price = BitConverter.ToDouble(bytes, 21)
+            Size = BitConverter.ToUInt32(bytes, 29)
+            Timestamp = BitConverter.ToDouble(bytes, 33)
         }
 
     let heartbeatFn () =
@@ -58,7 +58,7 @@ type Client(onQuote : Action<Quote>) =
             with :? OperationCanceledException -> ()
 
     let heartbeat : Thread =
-        new Thread(new ThreadStart(heartbeatFn), IsBackground = true)
+        new Thread(new ThreadStart(heartbeatFn))
 
     let threadFn () : unit =
         let ct = ctSource.Token
@@ -154,6 +154,10 @@ type Client(onQuote : Action<Quote>) =
         isReady <- false
         ctSource.Cancel()
         ws.Close()
+        heartbeat.Join()
+        for thread in threads do thread.Join()
         Log.Information("Stopped")
+
+    static member Log(messageTemplate:string, [<ParamArray>] propertyValues:obj[]) = Log.Information(messageTemplate, propertyValues)
 
 
