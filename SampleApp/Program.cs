@@ -7,7 +7,7 @@ namespace SampleApp
 {
 	class Program
 	{
-		private static Client client = null;
+		private static MultiClient client = null;
 		private static Timer timer = null;
 		private static readonly ConcurrentDictionary<string, int> symbols = new ConcurrentDictionary<string, int>(5, 1_500_000);
 		private static int maxCount = 0;
@@ -54,7 +54,7 @@ namespace SampleApp
 		{
 			Client.Log("Starting sample app");
 			timer = new Timer(TimerCallback, null, 10000, 10000);
-			client = new Client(OnQuote);
+			client = new MultiClient(OnQuote);
 			client.Join();
 			Console.CancelKeyPress += new ConsoleCancelEventHandler(Cancel);
 		}

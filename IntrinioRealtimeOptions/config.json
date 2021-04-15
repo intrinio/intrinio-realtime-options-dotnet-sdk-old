@@ -1,9 +1,11 @@
 ﻿{
 	"Config": {
 		"ApiKey": "OjEyOTk1MzNkMjEwZmY4MmYxNTRiMzhhYmY3NWIwOGYy",
-		"Provider": "OPRA_FIREHOSE",
+		"Provider": "MANUAL",
 		"Symbols": [ "lobby" ],
-		"NumThreads": 8
+		"NumThreads": 12,
+		"IpAddress": "54.205.202.231",
+		"NumPorts": 6
 	},
 	"Serilog": {
 		"Using": [ "Serilog.Sinks.Console", "Serilog.Sinks.File" ],
