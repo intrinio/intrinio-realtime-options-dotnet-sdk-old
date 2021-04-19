@@ -3,7 +3,7 @@
 		"ApiKey": "OjEyOTk1MzNkMjEwZmY4MmYxNTRiMzhhYmY3NWIwOGYy",
 		"Provider": "MANUAL",
 		"Symbols": [ "lobby" ],
-		"NumThreads": 12,
+		"NumThreads": 4,
 		"IpAddress": "54.205.202.231",
 		"NumPorts": 6
 	},

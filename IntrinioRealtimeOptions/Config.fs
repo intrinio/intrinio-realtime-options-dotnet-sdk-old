@@ -13,7 +13,7 @@ module Config =
         member val IPAddress : string = null with get, set
         member val Symbols: string[] = [||] with get, set
         member val NumThreads: int = 4 with get, set
-        member val NumPorts: int = 6 with get, set
+        member val NumPorts: int = 1 with get, set
 
     let LoadConfig() =
         Log.Information("Loading application configuration")
