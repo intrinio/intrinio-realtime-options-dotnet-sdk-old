@@ -90,7 +90,7 @@ type Client(onQuote : Action<Quote>) =
                     if not(ct.IsCancellationRequested) && not(isNull(wss)) && isReady.[portIndex]
                     then
                         wss.[portIndex].Send(heartbeatMessage)
-                else if wss.[portIndex].State <> WebSocketState.Open then
+                else if wss.[portIndex].State <> WebSocketState.Open && wss.[portIndex].State <> WebSocketState.Connecting then
                    Log.Information("Reconnecting")
                    wss.[portIndex].Open()
             with :? OperationCanceledException -> ()
