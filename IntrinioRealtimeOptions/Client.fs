@@ -34,11 +34,11 @@ type Client(onQuote : Action<Quote>) =
 
     let parseMessage (bytes: byte[]) : Quote =
         {
-            Type = "trade"
             Symbol = Encoding.ASCII.GetString(bytes, 0, 21)
-            Price = BitConverter.ToDouble(bytes, 21)
-            Size = BitConverter.ToUInt32(bytes, 29)
-            Timestamp = BitConverter.ToDouble(bytes, 33)
+            Type = enum<QuoteType> (int32 bytes.[21])
+            Price = BitConverter.ToDouble(bytes, 22)
+            Size = BitConverter.ToUInt32(bytes, 30)
+            Timestamp = BitConverter.ToDouble(bytes, 34)
         }
 
     let heartbeatFn () =
