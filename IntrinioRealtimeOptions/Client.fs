@@ -115,8 +115,8 @@ type Client(onQuote : Action<Quote>) =
             member this.Activate(data) =
                 Array2D.init config.NumPorts config.NumThreads (fun portIndex threadIndex -> new Thread(new ThreadStart(threadFn portIndex threadIndex data)))
                 |> Array2D.iter (fun x -> x.Start())
-        } 
-    
+        }
+
     let onOpen portIndex (_ : EventArgs) : unit =
         Log.Information("Websocket connected!")
         isReady.[portIndex] <- true
@@ -158,7 +158,7 @@ type Client(onQuote : Action<Quote>) =
             ws
             )
 
-        
+    do listener.Activate(data)     
 
     member this.Join() : unit =
         while not(isReady |> Array.fold (&&) true) do Thread.Sleep(1000)
