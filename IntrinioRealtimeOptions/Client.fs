@@ -17,11 +17,11 @@ type IDataListener =
 module internal Client =
     let parseMessage (bytes: byte[]) : Quote =
         {
-            Type = "trade"
             Symbol = Encoding.ASCII.GetString(bytes, 0, 21)
-            Price = BitConverter.ToDouble(bytes, 21)
-            Size = BitConverter.ToUInt32(bytes, 29)
-            Timestamp = BitConverter.ToDouble(bytes, 33)
+            Type = enum<QuoteType> (int32 bytes.[21])
+            Price = BitConverter.ToDouble(bytes, 22)
+            Size = BitConverter.ToUInt32(bytes, 30)
+            Timestamp = BitConverter.ToDouble(bytes, 34)
         }
         
     let authUrl (config : Config) i =
@@ -74,10 +74,6 @@ type Client(onQuote : Action<Quote>) =
     let ctSource : CancellationTokenSource = new CancellationTokenSource()
     let data : BlockingCollection<byte[]>[] = Array.init config.NumPorts (fun _ -> new BlockingCollection<byte[]>(new ConcurrentQueue<byte[]>()))
 
-
-
-
-
     let heartbeatFn portIndex () =
         let ct = ctSource.Token
         Log.Information("Starting heartbeat")
@@ -97,9 +93,6 @@ type Client(onQuote : Action<Quote>) =
 
     let heartbeat : Thread[] = Array.init config.NumPorts (fun portIndex -> new Thread(new ThreadStart(heartbeatFn portIndex)))
         
-
-    
-
     let listener : IDataListener =
         let threadFn portIndex threadIndex (data : BlockingCollection<byte[]>[]) () : unit =
             let ct = ctSource.Token
