@@ -48,10 +48,12 @@ type Client(onQuote : Action<Quote>) =
             try
                 Thread.Sleep(20000) //send heartbeat every 20 sec
                 Log.Information("Messages received: (data = {0}, text = {1}, queue depth = {2})", dataMsgCount, textMsgCount, data.Count)
-                let datum : byte[] = data.Take(ct)
-                let quote : Quote = parseMessage(datum)
-                Log.Information("Sample Quote: {0}", quote)
-                onQuote.Invoke(quote)
+                let mutable datum : byte[] = Array.empty<byte>
+                if data.TryTake(&datum, 1000, ct)
+                then
+                    let quote : Quote = parseMessage(datum)
+                    Log.Information("Sample Quote: {0}", quote)
+                    onQuote.Invoke(quote)
                 Log.Debug("Sending heartbeat")
                 if not(ct.IsCancellationRequested) && not(isNull(ws)) && isReady
                 then ws.Send(heartbeatMessage)
