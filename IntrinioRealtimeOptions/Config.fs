@@ -21,4 +21,10 @@ module Config =
         let mutable config = new Config()
         for (KeyValue(key,value)) in _config.AsEnumerable() do Log.Debug("Key: {0}, Value:{1}", key, value)
         _config.Bind("Config", config)
+        if String.IsNullOrWhiteSpace(config.ApiKey)
+        then failwith "You must provide a valid API key"
+        if (config.Provider = Provider.NONE)
+        then failwith "You must specify a valid 'provider'"
+        if ((config.Provider = Provider.MANUAL) || (config.Provider = Provider.MANUAL_FIREHOSE)) && (String.IsNullOrWhiteSpace(config.IPAddress))
+        then failwith "You must specify an IP address for manual configuration"
         config

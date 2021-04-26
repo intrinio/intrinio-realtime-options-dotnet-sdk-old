@@ -1,7 +1,8 @@
 ﻿{
 	"Config": {
 		"ApiKey": "OjEyOTk1MzNkMjEwZmY4MmYxNTRiMzhhYmY3NWIwOGYy",
-		"Provider": "OPRA_FIREHOSE",
+		"Provider": "MANUAL_FIREHOSE",
+		"IPAddress": "54.205.202.231",
 		"Symbols": [ "lobby" ],
 		"NumThreads": 8
 	},
@@ -15,15 +16,7 @@
 			}
 		},
 		"WriteTo": [
-			{ "Name": "Console" },
-			{
-				"Name": "File",
-				"Args": {
-					"path": "intrinio-realtime-options-client.log",
-					"fileSizeLimitBytes": 10000000,
-					"rollOnFileSizeLimit": true
-				}
-			}
+			{ "Name": "Console" }
 		]
 	}
 }

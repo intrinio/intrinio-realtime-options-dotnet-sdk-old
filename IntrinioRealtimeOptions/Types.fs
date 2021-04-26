@@ -8,6 +8,7 @@ type Provider =
     | OPRA = 1
     | OPRA_FIREHOSE = 2
     | MANUAL = 3
+    | MANUAL_FIREHOSE = 4
 
 type QuoteType =
     | Trade = 0
