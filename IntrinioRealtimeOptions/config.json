@@ -1,10 +1,10 @@
 ﻿{
 	"Config": {
 		"ApiKey": "OjEyOTk1MzNkMjEwZmY4MmYxNTRiMzhhYmY3NWIwOGYy",
-		"Provider": "MANUAL_FIREHOSE",
-		"IPAddress": "54.205.202.231",
-		"Symbols": [ "lobby" ],
-		"NumThreads": 8
+		"Provider": "MANUAL",
+		"IPAddress": "34.199.40.101",
+		"Symbols": [ "AAPL__210430C00136000" ],
+		"NumThreads": 1
 	},
 	"Serilog": {
 		"Using": [ "Serilog.Sinks.Console", "Serilog.Sinks.File" ],
