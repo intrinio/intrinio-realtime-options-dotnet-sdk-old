@@ -41,7 +41,7 @@ type Client(onQuote : Action<Quote>) =
     let mutable wsStates : WebSocketState[] = Array.empty<WebSocketState>
     let mutable dataMsgCount : int64 = 0L
     let mutable textMsgCount : int64 = 0L
-    let channels : LinkedList<string> = new LinkedList<string>()
+    let channels : HashSet<string> = new HashSet<string>()
     let ctSource : CancellationTokenSource = new CancellationTokenSource()
     let data : BlockingCollection<byte[]> = new BlockingCollection<byte[]>(new ConcurrentQueue<byte[]>())
     let mutable tryReconnect : (int -> unit) = fun (_:int) -> ()
@@ -234,6 +234,23 @@ type Client(onQuote : Action<Quote>) =
         finally wsLock.ExitWriteLock()
         wsStates |> Array.iter (fun (wss: WebSocketState) -> wss.WebSocket.Open())
 
+    let join(symbol: string) : unit =
+        if channels.Add(symbol)
+        then 
+            let message = "{\"topic\":\"options:" + symbol + "\",\"event\":\"phx_join\",\"payload\":{},\"ref\":null}"
+            wsStates |> Array.iteri (fun (index:int) (wss:WebSocketState) ->
+                Log.Information("Websocket {0} - Joining channel: {1}", index, symbol)
+                try wss.WebSocket.Send(message)
+                with _ -> channels.Remove(symbol) |> ignore )
+
+    let leave(symbol: string) : unit =
+        if channels.Remove(symbol)
+        then 
+            let message = "{\"topic\":\"options:" + symbol + "\",\"event\":\"phx_leave\",\"payload\":{},\"ref\":null}"
+            wsStates |> Array.iteri (fun (index:int) (wss:WebSocketState) ->
+                Log.Information("Websocket {0} - Leaving channel: {1}", index, symbol)
+                try wss.WebSocket.Send(message)
+                with _ -> () )
     do
         tryReconnect <- fun (index:int) ->
             Log.Information("Websocket {0} - Reconnecting...", index)
@@ -256,21 +273,37 @@ type Client(onQuote : Action<Quote>) =
     member this.Join() : unit =
         let allReady() = wsStates |> Array.forall (fun (wss:WebSocketState) -> wss.IsReady)
         while not(allReady()) do Thread.Sleep(1000)
-        for symbol in config.Symbols do
-            channels.AddLast(symbol) |> ignore
-            let message = "{\"topic\":\"options:" + symbol + "\",\"event\":\"phx_join\",\"payload\":{},\"ref\":null}"
-            wsStates |> Array.iteri (fun (index:int) (wss:WebSocketState) ->
-                Log.Information("Websocket {0} - Joining channel: {1}", index, symbol)
-                wss.WebSocket.Send(message) )
+        let symbolsToAdd : HashSet<string> = new HashSet<string>(config.Symbols)
+        symbolsToAdd.ExceptWith(channels)
+        for symbol in symbolsToAdd do join(symbol)
+
+    member this.Join(symbol: string) : unit =
+        let allReady() = wsStates |> Array.forall (fun (wss:WebSocketState) -> wss.IsReady)
+        while not(allReady()) do Thread.Sleep(1000)
+        if not (channels.Contains(symbol))
+        then join(symbol)
+
+    member this.Join(symbols: string[]) : unit =
+        let allReady() = wsStates |> Array.forall (fun (wss:WebSocketState) -> wss.IsReady)
+        while not(allReady()) do Thread.Sleep(1000)
+        let symbolsToAdd : HashSet<string> = new HashSet<string>(symbols)
+        symbolsToAdd.ExceptWith(channels)
+        for symbol in symbolsToAdd do join(symbol)
+
+    member this.Leave() : unit =
+        for channel in channels do leave(channel)
+
+    member this.Leave(symbol: string) : unit =
+        if channels.Contains(symbol)
+        then leave(symbol)
+
+    member this.Leave(symbols: string[]) : unit =
+        let symbolsToRemove : HashSet<string> = new HashSet<string>(symbols)
+        symbolsToRemove.IntersectWith(channels)
+        for symbol in symbolsToRemove do leave(symbol)
 
     member this.Stop() : unit =
-        while channels.Count > 0 do
-            let channel = channels.First.Value
-            channels.RemoveFirst()
-            let message = "{\"topic\":\"options:" + channel + "\",\"event\":\"phx_leave\",\"payload\":{},\"ref\":null}"
-            wsStates |> Array.iteri (fun (index:int) (wss:WebSocketState) ->
-                Log.Information("Websocket {0} - Leaving channel: {1}", index, channel)
-                wss.WebSocket.Send(message) )
+        for channel in channels do leave(channel)
         Thread.Sleep(1000)
         wsLock.EnterWriteLock()
         try wsStates |> Array.iter (fun (wss:WebSocketState) -> wss.IsReady <- false)
