@@ -58,10 +58,6 @@ type Client(onQuote : Action<Quote>) =
         try wsStates |> Array.forall (fun (wss:WebSocketState) -> wss.IsReady)
         finally wsLock.ExitReadLock()
 
-    let statsTimer : Timer = new Timer(new TimerCallback(fun (_:obj) ->
-        Log.Information("Messages received: (data = {0}, text = {1}, queue depth = {2})", dataMsgCount, textMsgCount, data.Count)
-        ), null, Timeout.Infinite, Timeout.Infinite)
-
     let getAuthUrl () : string =
         match config.Provider with
         | Provider.OPRA -> "https://realtime-options.intrinio.com/auth?api_key=" + config.ApiKey
@@ -95,6 +91,21 @@ type Client(onQuote : Action<Quote>) =
             Timestamp = BitConverter.ToDouble(bytes, 34)
         }
 
+    let parseMessages(bytes: byte[]) : Quote[] =
+        let quoteCount : int = int32 bytes.[0]
+        [|
+            for i in 0 .. quoteCount - 1 do
+                let offset : int = 1 + 42 * i
+                yield
+                    {
+                        Symbol = Encoding.ASCII.GetString(bytes, offset, 21)
+                        Type = enum<QuoteType> (int32 bytes.[offset + 21])
+                        Price = BitConverter.ToDouble(bytes, offset + 22)
+                        Size = BitConverter.ToUInt32(bytes, offset + 30)
+                        Timestamp = BitConverter.ToDouble(bytes, offset + 34)
+                    }
+        |]
+
     let heartbeatFn () =
         let ct = ctSource.Token
         Log.Debug("Starting heartbeat")
@@ -122,7 +133,25 @@ type Client(onQuote : Action<Quote>) =
                     onQuote.Invoke(quote)
             with :? OperationCanceledException -> ()
 
-    let threads : Thread[] = Array.init config.NumThreads (fun _ -> new Thread(new ThreadStart(threadFn)))
+    let firehoseThreadFn () : unit =
+        let ct = ctSource.Token
+        while not (ct.IsCancellationRequested) do
+            try
+                let mutable datum : byte[] = Array.empty<byte>
+                if data.TryTake(&datum, 1000)
+                then
+                    let quotes : Quote[] = parseMessages(datum)
+                    Log.Debug("Invoking 'onQuote'")
+                    for quote in quotes do onQuote.Invoke(quote)
+            with :? OperationCanceledException -> ()
+
+    let threads : Thread[] = Array.init config.NumThreads (fun _ -> 
+        new Thread(
+            new ThreadStart(
+                if config.Provider = Provider.MANUAL_FIREHOSE ||
+                    config.Provider = Provider.OPRA_FIREHOSE
+                then firehoseThreadFn
+                else threadFn)))
 
     let doBackoff(fn: unit -> bool) : unit =
         let mutable i : int = 0
@@ -148,16 +177,18 @@ type Client(onQuote : Action<Quote>) =
                     Interlocked.Exchange(&token, (_token, DateTime.Now)) |> ignore
                     Log.Information("Authorization successful")
                     true
-                | _ -> raise (AccessViolationException("Authorization Failure: " + response.StatusCode.ToString()))
+                | _ ->
+                    Log.Warning("Authorization Failure {0}: The authorization key you provided is likely incorrect.", response.StatusCode.ToString())
+                    false
         with
-        | :? WebException | :? IOException as exn ->
-            Log.Error("Authorization Failure: {0}. The authorization server is likey offline. Please make sure you're trying to connect during market hours.", exn.Message)
+        | :? WebException ->
+            Log.Error("Authorization Failure. The authorization server is likey offline.")
             false
-        | :? AccessViolationException as exn ->
-            Log.Error("{0). The authorization key you provided is likely incorrect.", exn.Message)
+        | :? IOException ->
+            Log.Error("Authorization Failure. Please check your network connection.")
             false
         | _ as exn ->
-            Log.Error("Unidentified Authorization Failure: {0}", exn.Message)
+            Log.Error("Unidentified Authorization Failure: {0}:{1}", exn.GetType(), exn.Message)
             false
 
     let getToken() : string =
@@ -305,38 +336,37 @@ type Client(onQuote : Action<Quote>) =
             doBackoff(reconnectFn)
         let _token : string = getToken()
         initializeWebSockets(_token)
-        statsTimer.Change(30_000, 30_000) |> ignore
 
-    member this.Join() : unit =
+    member _.Join() : unit =
         while not(allReady()) do Thread.Sleep(1000)
         let symbolsToAdd : HashSet<string> = new HashSet<string>(config.Symbols)
         symbolsToAdd.ExceptWith(channels)
         for symbol in symbolsToAdd do join(symbol)
 
-    member this.Join(symbol: string) : unit =
+    member _.Join(symbol: string) : unit =
         while not(allReady()) do Thread.Sleep(1000)
         if not (channels.Contains(symbol))
         then join(symbol)
 
-    member this.Join(symbols: string[]) : unit =
+    member _.Join(symbols: string[]) : unit =
         while not(allReady()) do Thread.Sleep(1000)
         let symbolsToAdd : HashSet<string> = new HashSet<string>(symbols)
         symbolsToAdd.ExceptWith(channels)
         for symbol in symbolsToAdd do join(symbol)
 
-    member this.Leave() : unit =
+    member _.Leave() : unit =
         for channel in channels do leave(channel)
 
-    member this.Leave(symbol: string) : unit =
+    member _.Leave(symbol: string) : unit =
         if channels.Contains(symbol)
         then leave(symbol)
 
-    member this.Leave(symbols: string[]) : unit =
+    member _.Leave(symbols: string[]) : unit =
         let symbolsToRemove : HashSet<string> = new HashSet<string>(symbols)
         symbolsToRemove.IntersectWith(channels)
         for symbol in symbolsToRemove do leave(symbol)
 
-    member this.Stop() : unit =
+    member _.Stop() : unit =
         for channel in channels do leave(channel)
         Thread.Sleep(1000)
         wsLock.EnterWriteLock()
@@ -349,6 +379,8 @@ type Client(onQuote : Action<Quote>) =
         heartbeat.Join()
         for thread in threads do thread.Join()
         Log.Information("Stopped")
+
+    member _.GetStats() : (int64 * int64 * int) = (Interlocked.Read(&dataMsgCount), Interlocked.Read(&textMsgCount), data.Count)
 
     static member Log(messageTemplate:string, [<ParamArray>] propertyValues:obj[]) = Log.Information(messageTemplate, propertyValues)
 

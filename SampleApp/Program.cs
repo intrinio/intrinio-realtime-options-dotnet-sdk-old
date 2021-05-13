@@ -35,10 +35,16 @@ namespace SampleApp
 
 		static void TimerCallback(object obj)
 		{
-			Client.Log("Most active symbol: {0} ({1} updates)", maxCountQuote.Symbol, maxCount);
+			Client client = (Client) obj;
+			Tuple<Int64, Int64, int> stats = client.GetStats();
+			Client.Log("Data Messages = {0}, Text Messages = {1}, Queue Depth = {2}", stats.Item1, stats.Item2, stats.Item3);
+			if (maxCount > 0)
+			{
+				Client.Log("Most active symbol: {0}:{1} ({2} updates)", maxCountQuote.Symbol, maxCountQuote.Type, maxCount);
+			}
 			if (!maxCountQuote.Equals(new Quote())) {
 				Quote quote = maxCountQuote;
-				Client.Log("{0} (strike price = {1}, isPut = {2}, isCall = {3}, expiration = {4})", quote.Symbol, quote.GetStrikePrice(), quote.IsPut(), quote.IsCall(), quote.GetExpirationDate());
+				Client.Log("{0} (type = {1}, strike price = {2}, isPut = {3}, isCall = {4}, expiration = {5})", quote.Symbol, quote.Type, quote.GetStrikePrice(), quote.IsPut(), quote.IsCall(), quote.GetExpirationDate());
 			}
 		}
 
@@ -53,8 +59,8 @@ namespace SampleApp
 		static void Main(string[] args)
 		{
 			Client.Log("Starting sample app");
-			timer = new Timer(TimerCallback, null, 10000, 10000);
 			client = new Client(OnQuote);
+			timer = new Timer(TimerCallback, client, 10000, 10000);
 			client.Join();
 			Console.CancelKeyPress += new ConsoleCancelEventHandler(Cancel);
 		}
