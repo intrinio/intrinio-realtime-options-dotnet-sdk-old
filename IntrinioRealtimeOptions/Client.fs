@@ -1,5 +1,6 @@
 ﻿namespace Intrinio
 
+open Serilog
 open System
 open System.IO
 open System.Net
@@ -7,13 +8,15 @@ open System.Text
 open System.Collections.Concurrent
 open System.Collections.Generic
 open System.Threading
+open System.Threading.Tasks
+open System.Net.Sockets
 open WebSocket4Net
-open Serilog
 open Intrinio.Config
 
 type internal WebSocketState(ws: WebSocket) =
     let mutable webSocket : WebSocket = ws
     let mutable isReady : bool = false
+    let mutable isReconnecting : bool = false
     let mutable lastReset : DateTime = DateTime.Now
 
     member _.WebSocket
@@ -23,6 +26,10 @@ type internal WebSocketState(ws: WebSocket) =
     member _.IsReady
         with get() : bool = isReady
         and set (ir:bool) = isReady <- ir
+
+    member _.IsReconnecting
+        with get() : bool = isReconnecting
+        and set (ir:bool) = isReconnecting <- ir
 
     member _.LastReset : DateTime = lastReset
 
@@ -41,10 +48,15 @@ type Client(onQuote : Action<Quote>) =
     let mutable wsStates : WebSocketState[] = Array.empty<WebSocketState>
     let mutable dataMsgCount : int64 = 0L
     let mutable textMsgCount : int64 = 0L
-    let channels : LinkedList<string> = new LinkedList<string>()
+    let channels : HashSet<string> = new HashSet<string>()
     let ctSource : CancellationTokenSource = new CancellationTokenSource()
     let data : BlockingCollection<byte[]> = new BlockingCollection<byte[]>(new ConcurrentQueue<byte[]>())
-    let mutable tryReconnect : (int -> unit) = fun (_:int) -> ()
+    let mutable tryReconnect : (int -> unit -> unit) = fun (_:int) () -> ()
+
+    let allReady() : bool = 
+        wsLock.EnterReadLock()
+        try wsStates |> Array.forall (fun (wss:WebSocketState) -> wss.IsReady)
+        finally wsLock.ExitReadLock()
 
     let statsTimer : Timer = new Timer(new TimerCallback(fun (_:obj) ->
         Log.Information("Messages received: (data = {0}, text = {1}, queue depth = {2})", dataMsgCount, textMsgCount, data.Count)
@@ -115,8 +127,8 @@ type Client(onQuote : Action<Quote>) =
     let doBackoff(fn: unit -> bool) : unit =
         let mutable i : int = 0
         let mutable backoff : int = selfHealBackoffs.[i]
-        let mutable success : bool = false
-        while not success do 
+        let mutable success : bool = fn()
+        while not success do
             Thread.Sleep(backoff)
             i <- Math.Min(i + 1, selfHealBackoffs.Length - 1)
             backoff <- selfHealBackoffs.[i]
@@ -165,6 +177,7 @@ type Client(onQuote : Action<Quote>) =
         wsLock.EnterWriteLock()
         try
             wsStates.[index].IsReady <- true
+            wsStates.[index].IsReconnecting <- false
             if not heartbeat.IsAlive
             then heartbeat.Start()
             for thread in threads do
@@ -179,16 +192,36 @@ type Client(onQuote : Action<Quote>) =
                 wsStates.[index].WebSocket.Send(message) )
 
     let onClose (index : int) (_ : EventArgs) : unit =
-        Log.Information("Websocket {0} - Closed", index)
-        wsLock.EnterWriteLock()
-        try wsStates.[index].IsReady <- false
-        finally wsLock.ExitWriteLock()
-        if not ctSource.IsCancellationRequested
-        then tryReconnect(index)
+        wsLock.EnterUpgradeableReadLock()
+        try 
+            if not wsStates.[index].IsReconnecting
+            then
+                Log.Information("Websocket {0} - Closed", index)
+                wsLock.EnterWriteLock()
+                try wsStates.[index].IsReady <- false
+                finally wsLock.ExitWriteLock()
+                if (not ctSource.IsCancellationRequested)
+                then Task.Factory.StartNew(Action(tryReconnect(index))) |> ignore
+        finally wsLock.ExitUpgradeableReadLock()
+
+    let (|Closed|Refused|Unavailable|Other|) (input:exn) =
+        if (input.GetType() = typeof<SocketException>) &&
+            input.Message.StartsWith("A connection attempt failed because the connected party did not properly respond after a period of time")
+        then Closed
+        elif (input.GetType() = typeof<SocketException>) &&
+            (input.Message = "No connection could be made because the target machine actively refused it.")
+        then Refused
+        elif input.Message.StartsWith("HTTP/1.1 503")
+        then Unavailable
+        else Other
 
     let onError (index : int) (args : SuperSocket.ClientEngine.ErrorEventArgs) : unit =
         let exn = args.Exception
-        Log.Error(exn, "Websocket {0} - Error - {1}:{2}", index, exn.GetType(), exn.Message)
+        match exn with
+        | Closed -> Log.Warning("Websocket {0} - Error - Connection failed", index)
+        | Refused -> Log.Warning("Websocket {0} - Error - Connection refused", index)
+        | Unavailable -> Log.Warning("Websocket {0} - Error - Server unavailable", index)
+        | _ -> Log.Error("Websocket {0} - Error - {1}:{2}", index, exn.GetType(), exn.Message)
 
     let onDataReceived (index : int) (args: DataReceivedEventArgs) : unit =
         Log.Debug("Websocket {0} - Data received", index)
@@ -234,18 +267,39 @@ type Client(onQuote : Action<Quote>) =
         finally wsLock.ExitWriteLock()
         wsStates |> Array.iter (fun (wss: WebSocketState) -> wss.WebSocket.Open())
 
+    let join(symbol: string) : unit =
+        if channels.Add(symbol)
+        then 
+            let message = "{\"topic\":\"options:" + symbol + "\",\"event\":\"phx_join\",\"payload\":{},\"ref\":null}"
+            wsStates |> Array.iteri (fun (index:int) (wss:WebSocketState) ->
+                Log.Information("Websocket {0} - Joining channel: {1}", index, symbol)
+                try wss.WebSocket.Send(message)
+                with _ -> channels.Remove(symbol) |> ignore )
+
+    let leave(symbol: string) : unit =
+        if channels.Remove(symbol)
+        then 
+            let message = "{\"topic\":\"options:" + symbol + "\",\"event\":\"phx_leave\",\"payload\":{},\"ref\":null}"
+            wsStates |> Array.iteri (fun (index:int) (wss:WebSocketState) ->
+                Log.Information("Websocket {0} - Leaving channel: {1}", index, symbol)
+                try wss.WebSocket.Send(message)
+                with _ -> () )
     do
-        tryReconnect <- fun (index:int) ->
-            Log.Information("Websocket {0} - Reconnecting...", index)
+        tryReconnect <- fun (index:int) () ->
             let reconnectFn () : bool =
+                Log.Information("Websocket {0} - Reconnecting...", index)
                 if wsStates.[index].IsReady then true
                 else
+                    wsLock.EnterWriteLock()
+                    try wsStates.[index].IsReconnecting <- true
+                    finally wsLock.ExitWriteLock()
                     if (DateTime.Now - TimeSpan.FromDays(5.0)) > (wsStates.[index].LastReset)
                     then
                         let _token : string = getToken()
                         resetWebSocket(index, _token)
                     else
-                        try wsStates.[index].WebSocket.Open()
+                        try
+                            wsStates.[index].WebSocket.Open()
                         with _ -> ()
                     false
             doBackoff(reconnectFn)
@@ -254,23 +308,36 @@ type Client(onQuote : Action<Quote>) =
         statsTimer.Change(30_000, 30_000) |> ignore
 
     member this.Join() : unit =
-        let allReady() = wsStates |> Array.forall (fun (wss:WebSocketState) -> wss.IsReady)
         while not(allReady()) do Thread.Sleep(1000)
-        for symbol in config.Symbols do
-            channels.AddLast(symbol) |> ignore
-            let message = "{\"topic\":\"options:" + symbol + "\",\"event\":\"phx_join\",\"payload\":{},\"ref\":null}"
-            wsStates |> Array.iteri (fun (index:int) (wss:WebSocketState) ->
-                Log.Information("Websocket {0} - Joining channel: {1}", index, symbol)
-                wss.WebSocket.Send(message) )
+        let symbolsToAdd : HashSet<string> = new HashSet<string>(config.Symbols)
+        symbolsToAdd.ExceptWith(channels)
+        for symbol in symbolsToAdd do join(symbol)
+
+    member this.Join(symbol: string) : unit =
+        while not(allReady()) do Thread.Sleep(1000)
+        if not (channels.Contains(symbol))
+        then join(symbol)
+
+    member this.Join(symbols: string[]) : unit =
+        while not(allReady()) do Thread.Sleep(1000)
+        let symbolsToAdd : HashSet<string> = new HashSet<string>(symbols)
+        symbolsToAdd.ExceptWith(channels)
+        for symbol in symbolsToAdd do join(symbol)
+
+    member this.Leave() : unit =
+        for channel in channels do leave(channel)
+
+    member this.Leave(symbol: string) : unit =
+        if channels.Contains(symbol)
+        then leave(symbol)
+
+    member this.Leave(symbols: string[]) : unit =
+        let symbolsToRemove : HashSet<string> = new HashSet<string>(symbols)
+        symbolsToRemove.IntersectWith(channels)
+        for symbol in symbolsToRemove do leave(symbol)
 
     member this.Stop() : unit =
-        while channels.Count > 0 do
-            let channel = channels.First.Value
-            channels.RemoveFirst()
-            let message = "{\"topic\":\"options:" + channel + "\",\"event\":\"phx_leave\",\"payload\":{},\"ref\":null}"
-            wsStates |> Array.iteri (fun (index:int) (wss:WebSocketState) ->
-                Log.Information("Websocket {0} - Leaving channel: {1}", index, channel)
-                wss.WebSocket.Send(message) )
+        for channel in channels do leave(channel)
         Thread.Sleep(1000)
         wsLock.EnterWriteLock()
         try wsStates |> Array.iter (fun (wss:WebSocketState) -> wss.IsReady <- false)
