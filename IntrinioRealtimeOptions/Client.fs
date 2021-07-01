@@ -5,6 +5,7 @@ open System
 open System.IO
 open System.Net
 open System.Text
+open System.Text.Json
 open System.Collections.Concurrent
 open System.Collections.Generic
 open System.Threading
@@ -38,7 +39,7 @@ type internal WebSocketState(ws: WebSocket) =
 type Client(onQuote : Action<Quote>) =
     let [<Literal>] heartbeatMessage : string = "{\"topic\":\"phoenix\",\"event\":\"heartbeat\",\"payload\":{},\"ref\":null}"
     let [<Literal>] heartbeatResponse : string = "{\"topic\":\"phoenix\",\"ref\":null,\"payload\":{\"status\":\"ok\",\"response\":{}},\"event\":\"phx_reply\"}"
-    let [<Literal>] heartbeatErrorResponse : string = "\"status\":\"error\""
+    let [<Literal>] errorResponse : string = "\"status\":\"error\""
     let selfHealBackoffs : int[] = [| 10_000; 30_000; 60_000; 300_000; 600_000 |]
 
     let config = LoadConfig()
@@ -263,7 +264,15 @@ type Client(onQuote : Action<Quote>) =
         Log.Debug("Websocket {0} - Message received", index)
         Interlocked.Increment(&textMsgCount) |> ignore
         if args.Message = heartbeatResponse then Log.Debug("Heartbeat response received")
-        elif args.Message.Contains(heartbeatErrorResponse) then Log.Error("Heartbeat error received")
+        elif args.Message.Contains(errorResponse)
+        then
+            let replyDoc : JsonDocument = JsonDocument.Parse(args.Message)
+            let errorMessage : string = 
+                replyDoc.RootElement
+                    .GetProperty("payload")
+                    .GetProperty("response")
+                    .GetString()
+            Log.Error("Error received: {0:l}", errorMessage)
 
     let resetWebSocket(index: int, token: string) : unit =
         Log.Information("Websocket {0} - Resetting", index)
