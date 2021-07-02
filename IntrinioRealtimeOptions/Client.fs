@@ -36,7 +36,7 @@ type internal WebSocketState(ws: WebSocket) =
 
     member _.Reset() : unit = lastReset <- DateTime.Now
 
-type Client(onQuote : Action<Quote>) =
+type Client(onQuote : Action<SocketMessage>) =
     let [<Literal>] heartbeatMessage : string = "{\"topic\":\"phoenix\",\"event\":\"heartbeat\",\"payload\":{},\"ref\":null}"
     let [<Literal>] heartbeatResponse : string = "{\"topic\":\"phoenix\",\"ref\":null,\"payload\":{\"status\":\"ok\",\"response\":{}},\"event\":\"phx_reply\"}"
     let [<Literal>] errorResponse : string = "\"status\":\"error\""
@@ -83,14 +83,28 @@ type Client(onQuote : Action<Quote>) =
         | Provider.MANUAL_FIREHOSE -> 6
         | _ -> failwith "Provider not specified!"
 
-    let parseMessage (bytes: byte[]) : Quote =
-        {
+    let parseMessage (bytes: byte[]) : SocketMessage =
+        match bytes.Length with
+        | 37 -> SocketMessage.OpenInterest ({
+             Symbol = Encoding.ASCII.GetString(bytes, 0, 21)
+             OpenInterest = BitConverter.ToInt32(bytes,21)
+             Timestamp = BitConverter.ToDouble(bytes, 29)
+             })
+        | 42 -> SocketMessage.Quote ({
             Symbol = Encoding.ASCII.GetString(bytes, 0, 21)
             Type = enum<QuoteType> (int32 bytes.[21])
             Price = BitConverter.ToDouble(bytes, 22)
             Size = BitConverter.ToUInt32(bytes, 30)
             Timestamp = BitConverter.ToDouble(bytes, 34)
-        }
+            })
+        | 50 -> SocketMessage.Trade ({
+            Symbol = Encoding.ASCII.GetString(bytes, 0, 21)
+            Price = BitConverter.ToDouble(bytes, 22)
+            Size = BitConverter.ToUInt32(bytes, 30)
+            Timestamp = BitConverter.ToDouble(bytes, 34)
+            TotalVolume = BitConverter.ToUInt64(bytes,42)
+            })
+        | n -> failwith "invalid message bytes"
 
     let parseMessages(bytes: byte[]) : Quote[] =
         let quoteCount : int = int32 bytes.[0]
@@ -129,7 +143,7 @@ type Client(onQuote : Action<Quote>) =
                 let mutable datum : byte[] = Array.empty<byte>
                 if data.TryTake(&datum, 1000)
                 then
-                    let quote : Quote = parseMessage(datum)
+                    let quote : SocketMessage = parseMessage(datum)
                     Log.Debug("Invoking 'onQuote'")
                     onQuote.Invoke(quote)
             with :? OperationCanceledException -> ()
