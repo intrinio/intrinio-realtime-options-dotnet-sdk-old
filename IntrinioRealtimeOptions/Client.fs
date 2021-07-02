@@ -106,20 +106,6 @@ type Client(onQuote : Action<SocketMessage>) =
             })
         | n -> failwith "invalid message bytes"
 
-    let parseMessages(bytes: byte[]) : Quote[] =
-        let quoteCount : int = int32 bytes.[0]
-        [|
-            for i in 0 .. quoteCount - 1 do
-                let offset : int = 1 + 42 * i
-                yield
-                    {
-                        Symbol = Encoding.ASCII.GetString(bytes, offset, 21)
-                        Type = enum<QuoteType> (int32 bytes.[offset + 21])
-                        Price = BitConverter.ToDouble(bytes, offset + 22)
-                        Size = BitConverter.ToUInt32(bytes, offset + 30)
-                        Timestamp = BitConverter.ToDouble(bytes, offset + 34)
-                    }
-        |]
 
     let heartbeatFn () =
         let ct = ctSource.Token
@@ -140,12 +126,10 @@ type Client(onQuote : Action<SocketMessage>) =
         let ct = ctSource.Token
         while not (ct.IsCancellationRequested) do
             try
-                let mutable datum : byte[] = Array.empty<byte>
-                if data.TryTake(&datum, 1000)
-                then
-                    let quote : SocketMessage = parseMessage(datum)
-                    Log.Debug("Invoking 'onQuote'")
-                    onQuote.Invoke(quote)
+                for datum in data.GetConsumingEnumerable() do
+                    datum
+                    |> parseMessage
+                    |> onQuote.Invoke
             with :? OperationCanceledException -> ()
 
     let firehoseThreadFn () : unit =
@@ -153,11 +137,11 @@ type Client(onQuote : Action<SocketMessage>) =
         while not (ct.IsCancellationRequested) do
             try
                 let mutable datum : byte[] = Array.empty<byte>
-                if data.TryTake(&datum, 1000)
-                then
-                    let quotes : Quote[] = parseMessages(datum)
-                    Log.Debug("Invoking 'onQuote'")
-                    for quote in quotes do onQuote.Invoke(quote)
+                for datum in data.GetConsumingEnumerable() do
+                    datum
+                    |> parseMessage
+                    |> onQuote.Invoke
+
             with :? OperationCanceledException -> ()
 
     let threads : Thread[] = Array.init config.NumThreads (fun _ -> 
