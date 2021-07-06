@@ -49,7 +49,7 @@ type Client(onQuote : Action<Quote>) =
     let mutable wsStates : WebSocketState[] = Array.empty<WebSocketState>
     let mutable dataMsgCount : int64 = 0L
     let mutable textMsgCount : int64 = 0L
-    let channels : HashSet<string> = new HashSet<string>()
+    let channels : HashSet<(string*bool)> = new HashSet<(string*bool)>()
     let ctSource : CancellationTokenSource = new CancellationTokenSource()
     let data : BlockingCollection<byte[]> = new BlockingCollection<byte[]>(new ConcurrentQueue<byte[]>())
     let mutable tryReconnect : (int -> unit -> unit) = fun (_:int) () -> ()
@@ -218,9 +218,10 @@ type Client(onQuote : Action<Quote>) =
         finally wsLock.ExitWriteLock()
         if channels.Count > 0
         then
-            channels |> Seq.iter (fun (symbol: string) ->
-                let message = "{\"topic\":\"options:" + symbol + "\",\"event\":\"phx_join\",\"payload\":{},\"ref\":null}"
-                Log.Information("Websocket {0} - Joining channel: {1}", index, symbol)
+            channels |> Seq.iter (fun (symbol: string, tradesOnly:bool) ->
+                let lastOnly : string = if tradesOnly then "true" else "false" 
+                let message : string = "{\"topic\":\"options:" + symbol + "\",\"event\":\"phx_join\",\"last_only\":\"" + lastOnly + "\",\"payload\":{},\"ref\":null}"
+                Log.Information("Websocket {0} - Joining channel: {1:l} (trades only = {2:l})", index, symbol, lastOnly)
                 wsStates.[index].WebSocket.Send(message) )
 
     let onClose (index : int) (_ : EventArgs) : unit =
@@ -307,21 +308,23 @@ type Client(onQuote : Action<Quote>) =
         finally wsLock.ExitWriteLock()
         wsStates |> Array.iter (fun (wss: WebSocketState) -> wss.WebSocket.Open())
 
-    let join(symbol: string) : unit =
-        if channels.Add(symbol)
+    let join(symbol: string, tradesOnly: bool) : unit =
+        let lastOnly : string = if tradesOnly then "true" else "false"
+        if channels.Add((symbol, tradesOnly))
         then 
-            let message = "{\"topic\":\"options:" + symbol + "\",\"event\":\"phx_join\",\"payload\":{},\"ref\":null}"
+            let message : string = "{\"topic\":\"options:" + symbol + "\",\"event\":\"phx_join\",\"last_only\":\"" + lastOnly + "\",\"payload\":{},\"ref\":null}"
             wsStates |> Array.iteri (fun (index:int) (wss:WebSocketState) ->
-                Log.Information("Websocket {0} - Joining channel: {1}", index, symbol)
+                Log.Information("Websocket {0} - Joining channel: {1:l} (trades only = {2:l})", index, symbol, lastOnly)
                 try wss.WebSocket.Send(message)
-                with _ -> channels.Remove(symbol) |> ignore )
+                with _ -> channels.Remove((symbol, tradesOnly)) |> ignore )
 
-    let leave(symbol: string) : unit =
-        if channels.Remove(symbol)
+    let leave(symbol: string, tradesOnly: bool) : unit =
+        let lastOnly : string = if tradesOnly then "true" else "false"
+        if channels.Remove((symbol, tradesOnly))
         then 
-            let message = "{\"topic\":\"options:" + symbol + "\",\"event\":\"phx_leave\",\"payload\":{},\"ref\":null}"
+            let message : string = "{\"topic\":\"options:" + symbol + "\",\"event\":\"phx_leave\",\"last_only\":\"" + lastOnly + "\",\"payload\":{},\"ref\":null}"
             wsStates |> Array.iteri (fun (index:int) (wss:WebSocketState) ->
-                Log.Information("Websocket {0} - Leaving channel: {1}", index, symbol)
+                Log.Information("Websocket {0} - Leaving channel: {1:l} (trades only = {2})", index, symbol, lastOnly)
                 try wss.WebSocket.Send(message)
                 with _ -> () )
     do
@@ -348,18 +351,32 @@ type Client(onQuote : Action<Quote>) =
 
     member _.Join() : unit =
         while not(allReady()) do Thread.Sleep(1000)
-        let symbolsToAdd : HashSet<string> = new HashSet<string>(config.Symbols)
+        let symbolsToAdd : HashSet<(string*bool)> =
+            config.Symbols
+            |> Seq.map(fun (symbol:string) -> (symbol, config.TradesOnly))
+            |> fun (symbols:seq<(string*bool)>) -> new HashSet<(string*bool)>(symbols)
         symbolsToAdd.ExceptWith(channels)
         for symbol in symbolsToAdd do join(symbol)
 
-    member _.Join(symbol: string) : unit =
+    member _.Join(symbol: string, ?tradesOnly: bool) : unit =
+        let t: bool =
+            match tradesOnly with
+            | Some(v:bool) -> v || config.TradesOnly
+            | None -> false || config.TradesOnly
         while not(allReady()) do Thread.Sleep(1000)
-        if not (channels.Contains(symbol))
-        then join(symbol)
+        if not (channels.Contains((symbol, t)))
+        then join(symbol, t)
 
-    member _.Join(symbols: string[]) : unit =
+    member _.Join(symbols: string[], ?tradesOnly: bool) : unit =
+        let t: bool =
+            match tradesOnly with
+            | Some(v:bool) -> v || config.TradesOnly
+            | None -> false || config.TradesOnly
         while not(allReady()) do Thread.Sleep(1000)
-        let symbolsToAdd : HashSet<string> = new HashSet<string>(symbols)
+        let symbolsToAdd : HashSet<(string*bool)> =
+            symbols
+            |> Seq.map(fun (symbol:string) -> (symbol,t))
+            |> fun (_symbols:seq<(string*bool)>) -> new HashSet<(string*bool)>(_symbols)
         symbolsToAdd.ExceptWith(channels)
         for symbol in symbolsToAdd do join(symbol)
 
@@ -367,13 +384,13 @@ type Client(onQuote : Action<Quote>) =
         for channel in channels do leave(channel)
 
     member _.Leave(symbol: string) : unit =
-        if channels.Contains(symbol)
-        then leave(symbol)
+        let matchingChannels : seq<(string*bool)> = channels |> Seq.where (fun (_symbol:string, _:bool) -> _symbol = symbol)
+        for channel in matchingChannels do leave(channel)
 
     member _.Leave(symbols: string[]) : unit =
-        let symbolsToRemove : HashSet<string> = new HashSet<string>(symbols)
-        symbolsToRemove.IntersectWith(channels)
-        for symbol in symbolsToRemove do leave(symbol)
+        let _symbols : HashSet<string> = new HashSet<string>(symbols)
+        let matchingChannels : seq<(string*bool)> = channels |> Seq.where(fun (symbol:string, _:bool) -> _symbols.Contains(symbol))
+        for channel in matchingChannels do leave(channel)
 
     member _.Stop() : unit =
         for channel in channels do leave(channel)
