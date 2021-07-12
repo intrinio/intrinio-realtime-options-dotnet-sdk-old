@@ -49,14 +49,11 @@ namespace SampleApp
 			else if (socketMessage.IsOpenInterest)
 			{
 				string key = socketMessage.openInterest.Symbol;
-				if (!symbols.ContainsKey(key)) {
-					symbols[key] = socketMessage.openInterest.OpenInterest;
-				} else
-				{
-					symbols[key] = socketMessage.openInterest.OpenInterest;
-					Client.Log("{0} openInterested updated to {1}", socketMessage.openInterest.Symbol,
-						socketMessage.openInterest.OpenInterest);
-				}
+
+				symbols[key] = socketMessage.openInterest.OpenInterest;
+				Client.Log("{0} openInterest updated to {1}", socketMessage.openInterest.Symbol,
+					socketMessage.openInterest.OpenInterest);
+				
 			}
 		}
 		

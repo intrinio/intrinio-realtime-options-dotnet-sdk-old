@@ -85,10 +85,10 @@ type Client(onQuote : Action<SocketMessage>) =
 
     let parseMessage (bytes: byte[]) : SocketMessage =
         match bytes.Length with
-        | 37 -> SocketMessage.OpenInterest ({
+        | 33 -> SocketMessage.OpenInterest ({
              Symbol = Encoding.ASCII.GetString(bytes, 0, 21)
              OpenInterest = BitConverter.ToInt32(bytes,21)
-             Timestamp = BitConverter.ToDouble(bytes, 29)
+             Timestamp = BitConverter.ToDouble(bytes, 25)
              })
         | 42 -> SocketMessage.Quote ({
             Symbol = Encoding.ASCII.GetString(bytes, 0, 21)
@@ -104,8 +104,18 @@ type Client(onQuote : Action<SocketMessage>) =
             Timestamp = BitConverter.ToDouble(bytes, 34)
             TotalVolume = BitConverter.ToUInt64(bytes,42)
             })
-        | n -> failwith "invalid message bytes"
+        | n -> failwithf "invalid message bytes %i" n
 
+    let parseMessageFirehose (bytes: byte[], cnt: int) : SocketMessage =
+        let offset = 1 + (cnt-1)*42
+        SocketMessage.Quote ({
+            Symbol = Encoding.ASCII.GetString(bytes, 0 + offset, 21)
+            Type = enum<QuoteType> (int32 bytes.[21 + offset])
+            Price = BitConverter.ToDouble(bytes, 22 + offset)
+            Size = BitConverter.ToUInt32(bytes, 30 + offset)
+            Timestamp = BitConverter.ToDouble(bytes, 34 + offset)
+            })
+      
 
     let heartbeatFn () =
         let ct = ctSource.Token
@@ -138,9 +148,11 @@ type Client(onQuote : Action<SocketMessage>) =
             try
                 let mutable datum : byte[] = Array.empty<byte>
                 for datum in data.GetConsumingEnumerable() do
-                    datum
-                    |> parseMessage
-                    |> onQuote.Invoke
+                    let cnt = datum.[0] |> int
+                    if 1+(cnt)*42 <> datum.Length then failwithf "invalid size %i" datum.Length
+                    for index in 1 .. cnt do
+                        parseMessageFirehose(datum,cnt)
+                        |> onQuote.Invoke
 
             with :? OperationCanceledException -> ()
 
