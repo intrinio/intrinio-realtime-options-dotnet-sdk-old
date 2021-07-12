@@ -134,9 +134,10 @@ type Client(onQuote : Action<SocketMessage>) =
 
     let threadFn () : unit =
         let ct = ctSource.Token
+        let mutable datum : byte[] = Array.empty<byte>
         while not (ct.IsCancellationRequested) do
             try
-                for datum in data.GetConsumingEnumerable() do
+                if data.TryTake(&datum,1000) then
                     datum
                     |> parseMessage
                     |> onQuote.Invoke
@@ -144,10 +145,10 @@ type Client(onQuote : Action<SocketMessage>) =
 
     let firehoseThreadFn () : unit =
         let ct = ctSource.Token
+        let mutable datum : byte[] = Array.empty<byte>
         while not (ct.IsCancellationRequested) do
             try
-                let mutable datum : byte[] = Array.empty<byte>
-                for datum in data.GetConsumingEnumerable() do
+                if data.TryTake(&datum,1000) then
                     let cnt = datum.[0] |> int
                     if 1+(cnt)*42 <> datum.Length then failwithf "invalid size %i" datum.Length
                     for index in 1 .. cnt do
