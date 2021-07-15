@@ -149,11 +149,14 @@ type Client(onQuote : Action<SocketMessage>) =
         while not (ct.IsCancellationRequested) do
             try
                 if data.TryTake(&datum,1000) then
-                    let cnt = datum.[0] |> int
-                    if 1+(cnt)*42 <> datum.Length then failwithf "invalid size %i" datum.Length
-                    for index in 1 .. cnt do
-                        parseMessageFirehose(datum,cnt)
-                        |> onQuote.Invoke
+                    match datum.Length with
+                    | 33 | 42 | 50 -> parseMessage(datum) |> onQuote.Invoke
+                    | len when 1+(datum.[0] |> int)*42 = len ->                        
+                        let cnt = datum.[0] |> int
+                        for index in 1 .. cnt do
+                            parseMessageFirehose(datum,cnt)
+                            |> onQuote.Invoke
+                    | len -> failwithf "invalid message length %i" len
 
             with :? OperationCanceledException -> ()
 
