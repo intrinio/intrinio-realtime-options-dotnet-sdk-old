@@ -49,14 +49,10 @@ namespace SampleApp
 			else if (socketMessage.IsOpenInterest)
 			{
 				string key = socketMessage.openInterest.Symbol;
-
 				symbols[key] = socketMessage.openInterest.OpenInterest;
-				Client.Log("{0} openInterest updated to {1}", socketMessage.openInterest.Symbol,
-					socketMessage.openInterest.OpenInterest);
-				
+				Client.Log("{0} openInterest updated to {1}", socketMessage.openInterest.Symbol, socketMessage.openInterest.OpenInterest);				
 			}
-		}
-		
+		}		
 
 		static void TimerCallback(object obj)
 		{
@@ -88,8 +84,6 @@ namespace SampleApp
 			timer = new Timer(TimerCallback, client, 10000, 10000);
 			client.Join();
 			Console.CancelKeyPress += new ConsoleCancelEventHandler(Cancel);
-		}
-
-		
+		}		
 	}
 }

@@ -85,10 +85,10 @@ type Client(onQuote : Action<SocketMessage>) =
 
     let parseMessage (bytes: byte[]) : SocketMessage =
         match bytes.Length with
-        | 33 -> SocketMessage.OpenInterest ({
+        | 34 -> SocketMessage.OpenInterest ({
              Symbol = Encoding.ASCII.GetString(bytes, 0, 21)
-             OpenInterest = BitConverter.ToInt32(bytes,21)
-             Timestamp = BitConverter.ToDouble(bytes, 25)
+             OpenInterest = BitConverter.ToInt32(bytes,22)
+             Timestamp = BitConverter.ToDouble(bytes, 26)
              })
         | 42 -> SocketMessage.Quote ({
             Symbol = Encoding.ASCII.GetString(bytes, 0, 21)
@@ -106,14 +106,21 @@ type Client(onQuote : Action<SocketMessage>) =
             })
         | n -> failwithf "invalid message bytes %i" n
 
-    let parseMessageFirehose (bytes: byte[], cnt: int) : SocketMessage =
-        let offset = 1 + (cnt-1)*42
+    let parseMessageFirehose (bytes: byte[], startIndex: byref<int>) : SocketMessage =
+        let msgType = bytes.[startIndex + 21]
+        match msgType |> int with
+        | 0 -> () //trade. don't forget to update startIndex
+        | 1 -> () //ask. don't forget to update startIndex
+        | 2 -> () //bid. don't forget to update startIndex
+        | 3 -> () //openinterest.
+        | _ -> ()
+        
         SocketMessage.Quote ({
-            Symbol = Encoding.ASCII.GetString(bytes, 0 + offset, 21)
-            Type = enum<QuoteType> (int32 bytes.[21 + offset])
-            Price = BitConverter.ToDouble(bytes, 22 + offset)
-            Size = BitConverter.ToUInt32(bytes, 30 + offset)
-            Timestamp = BitConverter.ToDouble(bytes, 34 + offset)
+            Symbol = Encoding.ASCII.GetString(bytes, 0 + startIndex, 21)
+            Type = enum<QuoteType> (int32 bytes.[21 + startIndex])
+            Price = BitConverter.ToDouble(bytes, 22 + startIndex)
+            Size = BitConverter.ToUInt32(bytes, 30 + startIndex)
+            Timestamp = BitConverter.ToDouble(bytes, 34 + startIndex)
             })
       
 
@@ -150,13 +157,13 @@ type Client(onQuote : Action<SocketMessage>) =
             try
                 if data.TryTake(&datum,1000) then
                     match datum.Length with
-                    | 33 | 42 | 50 -> parseMessage(datum) |> onQuote.Invoke
-                    | len when 1+(datum.[0] |> int)*42 = len ->                        
+                    | 34 | 42 | 50 -> parseMessage(datum) |> onQuote.Invoke
+                    | _ ->                        
                         let cnt = datum.[0] |> int
-                        for index in 1 .. cnt do
-                            parseMessageFirehose(datum,cnt)
+                        let mutable startIndex = 1
+                        for _ in 1 .. cnt do
+                            parseMessageFirehose(datum, &startIndex)
                             |> onQuote.Invoke
-                    | len -> failwithf "invalid message length %i" len
 
             with :? OperationCanceledException -> ()
 
@@ -338,27 +345,27 @@ type Client(onQuote : Action<SocketMessage>) =
                 Log.Information("Websocket {0} - Leaving channel: {1}", index, symbol)
                 try wss.WebSocket.Send(message)
                 with _ -> () )
-    do
-        tryReconnect <- fun (index:int) () ->
-            let reconnectFn () : bool =
-                Log.Information("Websocket {0} - Reconnecting...", index)
-                if wsStates.[index].IsReady then true
-                else
-                    wsLock.EnterWriteLock()
-                    try wsStates.[index].IsReconnecting <- true
-                    finally wsLock.ExitWriteLock()
-                    if (DateTime.Now - TimeSpan.FromDays(5.0)) > (wsStates.[index].LastReset)
-                    then
-                        let _token : string = getToken()
-                        resetWebSocket(index, _token)
+        do
+            tryReconnect <- fun (index:int) () ->
+                let reconnectFn () : bool =
+                    Log.Information("Websocket {0} - Reconnecting...", index)
+                    if wsStates.[index].IsReady then true
                     else
-                        try
-                            wsStates.[index].WebSocket.Open()
-                        with _ -> ()
-                    false
-            doBackoff(reconnectFn)
-        let _token : string = getToken()
-        initializeWebSockets(_token)
+                        wsLock.EnterWriteLock()
+                        try wsStates.[index].IsReconnecting <- true
+                        finally wsLock.ExitWriteLock()
+                        if (DateTime.Now - TimeSpan.FromDays(5.0)) > (wsStates.[index].LastReset)
+                        then
+                            let _token : string = getToken()
+                            resetWebSocket(index, _token)
+                        else
+                            try
+                                wsStates.[index].WebSocket.Open()
+                            with _ -> ()
+                        false
+                doBackoff(reconnectFn)
+            let _token : string = getToken()
+            initializeWebSockets(_token)
 
     member _.Join() : unit =
         while not(allReady()) do Thread.Sleep(1000)
