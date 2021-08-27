@@ -10,10 +10,11 @@ type Provider =
     | MANUAL = 3
     | MANUAL_FIREHOSE = 4
 
-type QuoteType =
+type MessageType =
     | Trade = 0
     | Ask = 1
     | Bid = 2
+    | OpenInterest = 3
 
 /// A 'Quote' is the standard unit of data representing an individual market event. A quote object will be returned for every market transaction.
 /// Type: the type of the quote - 0, 1, or 2 for 'trade', 'ask', or 'bid', respectively (will always be 0/'trade' for firehose data)
@@ -23,7 +24,7 @@ type QuoteType =
 /// Timestamp: the time that the trade was executed (a unix timestamp representing the number of milliseconds (or better) since the unix epoch) </para>
 type [<Struct>] Quote =
     {
-        Type : QuoteType 
+        Type : MessageType 
         Symbol : string
         Price : float
         Size : uint32
@@ -44,7 +45,7 @@ type [<Struct>] Quote =
 
     override this.ToString() : string =
         "Quote (" +
-        "Type: " + QuoteType.GetName(this.Type) +
+        "Type: " + MessageType.GetName(this.Type) +
         ", Symbol: " + this.Symbol +
         ", Price: " + this.Price.ToString("f") +
         ", Size: " + this.Size.ToString() +

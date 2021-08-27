@@ -83,46 +83,48 @@ type Client(onQuote : Action<SocketMessage>) =
         | Provider.MANUAL_FIREHOSE -> 6
         | _ -> failwith "Provider not specified!"
 
-    let parseMessage (bytes: byte[]) : SocketMessage =
-        match bytes.Length with
-        | 34 -> SocketMessage.OpenInterest ({
-             Symbol = Encoding.ASCII.GetString(bytes, 0, 21)
-             OpenInterest = BitConverter.ToInt32(bytes,22)
-             Timestamp = BitConverter.ToDouble(bytes, 26)
-             })
-        | 42 -> SocketMessage.Quote ({
-            Symbol = Encoding.ASCII.GetString(bytes, 0, 21)
-            Type = enum<QuoteType> (int32 bytes.[21])
-            Price = BitConverter.ToDouble(bytes, 22)
-            Size = BitConverter.ToUInt32(bytes, 30)
-            Timestamp = BitConverter.ToDouble(bytes, 34)
-            })
-        | 50 -> SocketMessage.Trade ({
-            Symbol = Encoding.ASCII.GetString(bytes, 0, 21)
-            Price = BitConverter.ToDouble(bytes, 22)
-            Size = BitConverter.ToUInt32(bytes, 30)
-            Timestamp = BitConverter.ToDouble(bytes, 34)
-            TotalVolume = BitConverter.ToUInt64(bytes,42)
-            })
-        | n -> failwithf "invalid message bytes %i" n
+    let parseMessage (bytes: ReadOnlySpan<byte>, msgType: MessageType) : SocketMessage =
+        match msgType with
+        | MessageType.OpenInterest -> SocketMessage.OpenInterest ({
+                    Symbol = Encoding.ASCII.GetString(bytes.Slice(0, 21))
+                    OpenInterest = BitConverter.ToInt32(bytes.Slice(22, 4))
+                    Timestamp = BitConverter.ToDouble(bytes.Slice(26, 8))
+                })
+        | MessageType.Ask | MessageType.Bid -> SocketMessage.Quote ({
+                    Symbol = Encoding.ASCII.GetString(bytes.Slice(0, 21))
+                    Type = msgType
+                    Price = BitConverter.ToDouble(bytes.Slice(22, 8))
+                    Size = BitConverter.ToUInt32(bytes.Slice(30, 4))
+                    Timestamp = BitConverter.ToDouble(bytes.Slice(34, 8))
+                })
+        | MessageType.Trade -> SocketMessage.Trade ({
+                    Symbol = Encoding.ASCII.GetString(bytes.Slice(0, 21))
+                    Price = BitConverter.ToDouble(bytes.Slice(22, 8))
+                    Size = BitConverter.ToUInt32(bytes.Slice(30, 4))
+                    Timestamp = BitConverter.ToDouble(bytes.Slice(34, 8))
+                    TotalVolume = BitConverter.ToUInt64(bytes.Slice(42, 8))
+                })
+        | n -> failwithf "invalid message type %i" (n |> int32)
 
-    let parseMessageFirehose (bytes: byte[], startIndex: byref<int>) : SocketMessage =
-        let msgType = bytes.[startIndex + 21]
-        match msgType |> int with
-        | 0 -> () //trade. don't forget to update startIndex
-        | 1 -> () //ask. don't forget to update startIndex
-        | 2 -> () //bid. don't forget to update startIndex
-        | 3 -> () //openinterest.
-        | _ -> ()
-        
-        SocketMessage.Quote ({
-            Symbol = Encoding.ASCII.GetString(bytes, 0 + startIndex, 21)
-            Type = enum<QuoteType> (int32 bytes.[21 + startIndex])
-            Price = BitConverter.ToDouble(bytes, 22 + startIndex)
-            Size = BitConverter.ToUInt32(bytes, 30 + startIndex)
-            Timestamp = BitConverter.ToDouble(bytes, 34 + startIndex)
-            })
-      
+    let parseSocketMessage (bytes: byte[], startIndex: byref<int>) : SocketMessage =
+        let msgType = enum<MessageType> (int32 bytes.[startIndex + 21])
+        match msgType with
+        | MessageType.Trade -> 
+            let chunk: ReadOnlySpan<byte> = new ReadOnlySpan<byte>(bytes, startIndex, 50)
+            let socketMessage = parseMessage(chunk, msgType)
+            startIndex <- startIndex + 50
+            socketMessage
+        | MessageType.Ask | MessageType.Bid -> 
+            let chunk: ReadOnlySpan<byte> = new ReadOnlySpan<byte>(bytes, startIndex, 42)
+            let socketMessage = parseMessage(chunk, msgType)
+            startIndex <- startIndex + 42
+            socketMessage
+        | MessageType.OpenInterest -> 
+            let chunk: ReadOnlySpan<byte> = new ReadOnlySpan<byte>(bytes, startIndex, 34)
+            let socketMessage = parseMessage(chunk, msgType)
+            startIndex <- startIndex + 34
+            socketMessage
+        | _ -> failwithf "Invalid MessageType: %i" (int32 bytes.[startIndex + 21])
 
     let heartbeatFn () =
         let ct = ctSource.Token
@@ -145,35 +147,19 @@ type Client(onQuote : Action<SocketMessage>) =
         while not (ct.IsCancellationRequested) do
             try
                 if data.TryTake(&datum,1000) then
-                    datum
-                    |> parseMessage
-                    |> onQuote.Invoke
-            with :? OperationCanceledException -> ()
-
-    let firehoseThreadFn () : unit =
-        let ct = ctSource.Token
-        let mutable datum : byte[] = Array.empty<byte>
-        while not (ct.IsCancellationRequested) do
-            try
-                if data.TryTake(&datum,1000) then
                     match datum.Length with
-                    | 34 | 42 | 50 -> parseMessage(datum) |> onQuote.Invoke
+                    | 34 | 42 | 50 -> 
+                        let mutable startIndex = 0
+                        parseSocketMessage(datum, &startIndex) |> onQuote.Invoke
                     | _ ->                        
                         let cnt = datum.[0] |> int
                         let mutable startIndex = 1
                         for _ in 1 .. cnt do
-                            parseMessageFirehose(datum, &startIndex)
+                            parseSocketMessage(datum, &startIndex)
                             |> onQuote.Invoke
-
             with :? OperationCanceledException -> ()
 
-    let threads : Thread[] = Array.init config.NumThreads (fun _ -> 
-        new Thread(
-            new ThreadStart(
-                if config.Provider = Provider.MANUAL_FIREHOSE ||
-                    config.Provider = Provider.OPRA_FIREHOSE
-                then firehoseThreadFn
-                else threadFn)))
+    let threads : Thread[] = Array.init config.NumThreads (fun _ -> new Thread(new ThreadStart(threadFn)))
 
     let doBackoff(fn: unit -> bool) : unit =
         let mutable i : int = 0
