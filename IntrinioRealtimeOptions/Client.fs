@@ -148,10 +148,10 @@ type Client(onQuote : Action<SocketMessage>) =
             try
                 if data.TryTake(&datum,1000) then
                     match datum.Length with
-                    | 34 | 42 | 50 -> 
+                    | 34 | 42 | 50 -> //single message
                         let mutable startIndex = 0
                         parseSocketMessage(datum, &startIndex) |> onQuote.Invoke
-                    | _ ->                        
+                    | _ -> // this is a grouped (many) messages.  the first byte tells us how many there are.  from there, check the type at index 21 to know how many bytes each message has.
                         let cnt = datum.[0] |> int
                         let mutable startIndex = 1
                         for _ in 1 .. cnt do
