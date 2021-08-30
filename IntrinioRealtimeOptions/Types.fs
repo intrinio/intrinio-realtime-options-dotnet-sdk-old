@@ -82,11 +82,8 @@ type [<Struct>] Trade =
         ", Timestamp: " + this.Timestamp.ToString("f") +
         ")"
         
-
-        
 type [<Struct>] OpenInterest =
     {
-
         Symbol : string
         OpenInterest : int32
         Timestamp : float

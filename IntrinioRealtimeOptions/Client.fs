@@ -334,27 +334,28 @@ type Client(onQuote : Action<SocketMessage>) =
                 Log.Information("Websocket {0} - Leaving channel: {1:l} (trades only = {2})", index, symbol, lastOnly)
                 try wss.WebSocket.Send(message)
                 with _ -> () )
-        do
-            tryReconnect <- fun (index:int) () ->
-                let reconnectFn () : bool =
-                    Log.Information("Websocket {0} - Reconnecting...", index)
-                    if wsStates.[index].IsReady then true
+
+    do
+        tryReconnect <- fun (index:int) () ->
+            let reconnectFn () : bool =
+                Log.Information("Websocket {0} - Reconnecting...", index)
+                if wsStates.[index].IsReady then true
+                else
+                    wsLock.EnterWriteLock()
+                    try wsStates.[index].IsReconnecting <- true
+                    finally wsLock.ExitWriteLock()
+                    if (DateTime.Now - TimeSpan.FromDays(5.0)) > (wsStates.[index].LastReset)
+                    then
+                        let _token : string = getToken()
+                        resetWebSocket(index, _token)
                     else
-                        wsLock.EnterWriteLock()
-                        try wsStates.[index].IsReconnecting <- true
-                        finally wsLock.ExitWriteLock()
-                        if (DateTime.Now - TimeSpan.FromDays(5.0)) > (wsStates.[index].LastReset)
-                        then
-                            let _token : string = getToken()
-                            resetWebSocket(index, _token)
-                        else
-                            try
-                                wsStates.[index].WebSocket.Open()
-                            with _ -> ()
-                        false
-                doBackoff(reconnectFn)
-            let _token : string = getToken()
-            initializeWebSockets(_token)
+                        try
+                            wsStates.[index].WebSocket.Open()
+                        with _ -> ()
+                    false
+            doBackoff(reconnectFn)
+        let _token : string = getToken()
+        initializeWebSockets(_token)
 
     member _.Join() : unit =
         while not(allReady()) do Thread.Sleep(1000)
