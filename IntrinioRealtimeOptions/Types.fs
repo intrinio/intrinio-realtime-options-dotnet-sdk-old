@@ -88,8 +88,3 @@ type [<Struct>] OpenInterest =
         OpenInterest : int32
         Timestamp : float
     }
-    
-type [<Struct>] SocketMessage =
-    | Quote of quote : Quote
-    | OpenInterest of openInterest : OpenInterest
-    | Trade of trade : Trade

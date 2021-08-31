@@ -36,7 +36,7 @@ type internal WebSocketState(ws: WebSocket) =
 
     member _.Reset() : unit = lastReset <- DateTime.Now
 
-type Client(onQuote : Action<SocketMessage>) =
+type Client(onQuote : Action<Quote>, onTrade : Action<Trade>, onOpenInterest : Action<OpenInterest>) =
     let [<Literal>] heartbeatMessage : string = "{\"topic\":\"phoenix\",\"event\":\"heartbeat\",\"payload\":{},\"ref\":null}"
     let [<Literal>] heartbeatResponse : string = "{\"topic\":\"phoenix\",\"ref\":null,\"payload\":{\"status\":\"ok\",\"response\":{}},\"event\":\"phx_reply\"}"
     let [<Literal>] errorResponse : string = "\"status\":\"error\""
@@ -83,47 +83,49 @@ type Client(onQuote : Action<SocketMessage>) =
         | Provider.MANUAL_FIREHOSE -> 6
         | _ -> failwith "Provider not specified!"
 
-    let parseMessage (bytes: ReadOnlySpan<byte>, msgType: MessageType) : SocketMessage =
-        match msgType with
-        | MessageType.OpenInterest -> SocketMessage.OpenInterest ({
-                    Symbol = Encoding.ASCII.GetString(bytes.Slice(0, 21))
-                    OpenInterest = BitConverter.ToInt32(bytes.Slice(22, 4))
-                    Timestamp = BitConverter.ToDouble(bytes.Slice(26, 8))
-                })
-        | MessageType.Ask | MessageType.Bid -> SocketMessage.Quote ({
-                    Symbol = Encoding.ASCII.GetString(bytes.Slice(0, 21))
-                    Type = msgType
-                    Price = BitConverter.ToDouble(bytes.Slice(22, 8))
-                    Size = BitConverter.ToUInt32(bytes.Slice(30, 4))
-                    Timestamp = BitConverter.ToDouble(bytes.Slice(34, 8))
-                })
-        | MessageType.Trade -> SocketMessage.Trade ({
-                    Symbol = Encoding.ASCII.GetString(bytes.Slice(0, 21))
-                    Price = BitConverter.ToDouble(bytes.Slice(22, 8))
-                    Size = BitConverter.ToUInt32(bytes.Slice(30, 4))
-                    Timestamp = BitConverter.ToDouble(bytes.Slice(34, 8))
-                    TotalVolume = BitConverter.ToUInt64(bytes.Slice(42, 8))
-                })
-        | n -> failwithf "invalid message type %i" (n |> int32)
+    let parseTrade (bytes: ReadOnlySpan<byte>) : Trade =
+        {
+            Symbol = Encoding.ASCII.GetString(bytes.Slice(0, 21))
+            Price = BitConverter.ToDouble(bytes.Slice(22, 8))
+            Size = BitConverter.ToUInt32(bytes.Slice(30, 4))
+            Timestamp = BitConverter.ToDouble(bytes.Slice(34, 8))
+            TotalVolume = BitConverter.ToUInt64(bytes.Slice(42, 8))
+        }
 
-    let parseSocketMessage (bytes: byte[], startIndex: byref<int>) : SocketMessage =
+    let parseQuote (bytes: ReadOnlySpan<byte>, msgType: MessageType) : Quote =
+        {
+            Symbol = Encoding.ASCII.GetString(bytes.Slice(0, 21))
+            Type = msgType
+            Price = BitConverter.ToDouble(bytes.Slice(22, 8))
+            Size = BitConverter.ToUInt32(bytes.Slice(30, 4))
+            Timestamp = BitConverter.ToDouble(bytes.Slice(34, 8))
+        }
+
+    let parseOpenInterest (bytes: ReadOnlySpan<byte>) : OpenInterest =
+        {
+            Symbol = Encoding.ASCII.GetString(bytes.Slice(0, 21))
+            OpenInterest = BitConverter.ToInt32(bytes.Slice(22, 4))
+            Timestamp = BitConverter.ToDouble(bytes.Slice(26, 8))
+        }
+
+    let parseSocketMessage (bytes: byte[], startIndex: byref<int>) : unit =
         let msgType = enum<MessageType> (int32 bytes.[startIndex + 21])
         match msgType with
         | MessageType.Trade -> 
             let chunk: ReadOnlySpan<byte> = new ReadOnlySpan<byte>(bytes, startIndex, 50)
-            let socketMessage = parseMessage(chunk, msgType)
+            let trade: Trade = parseTrade(chunk)
             startIndex <- startIndex + 50
-            socketMessage
+            trade |> onTrade.Invoke
         | MessageType.Ask | MessageType.Bid -> 
             let chunk: ReadOnlySpan<byte> = new ReadOnlySpan<byte>(bytes, startIndex, 42)
-            let socketMessage = parseMessage(chunk, msgType)
+            let quote: Quote = parseQuote(chunk, msgType)
             startIndex <- startIndex + 42
-            socketMessage
+            quote |> onQuote.Invoke
         | MessageType.OpenInterest -> 
             let chunk: ReadOnlySpan<byte> = new ReadOnlySpan<byte>(bytes, startIndex, 34)
-            let socketMessage = parseMessage(chunk, msgType)
+            let openInterest = parseOpenInterest(chunk)
             startIndex <- startIndex + 34
-            socketMessage
+            openInterest |> onOpenInterest.Invoke
         | _ -> failwithf "Invalid MessageType: %i" (int32 bytes.[startIndex + 21])
 
     let heartbeatFn () =
@@ -147,16 +149,11 @@ type Client(onQuote : Action<SocketMessage>) =
         while not (ct.IsCancellationRequested) do
             try
                 if data.TryTake(&datum,1000) then
-                    match datum.Length with
-                    | 34 | 42 | 50 -> //single message
-                        let mutable startIndex = 0
-                        parseSocketMessage(datum, &startIndex) |> onQuote.Invoke
-                    | _ -> // this is a grouped (many) messages.  the first byte tells us how many there are.  from there, check the type at index 21 to know how many bytes each message has.
-                        let cnt = datum.[0] |> int
-                        let mutable startIndex = 1
-                        for _ in 1 .. cnt do
-                            parseSocketMessage(datum, &startIndex)
-                            |> onQuote.Invoke
+                    // these are grouped (many) messages.  The first byte tells us how many there are.  from there, check the type at index 21 to know how many bytes each message has.
+                    let cnt = datum.[0] |> int
+                    let mutable startIndex = 1
+                    for _ in 1 .. cnt do
+                        parseSocketMessage(datum, &startIndex)                        
             with :? OperationCanceledException -> ()
 
     let threads : Thread[] = Array.init config.NumThreads (fun _ -> new Thread(new ThreadStart(threadFn)))
