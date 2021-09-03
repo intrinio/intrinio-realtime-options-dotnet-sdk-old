@@ -36,7 +36,7 @@ type internal WebSocketState(ws: WebSocket) =
 
     member _.Reset() : unit = lastReset <- DateTime.Now
 
-type Client(onQuote : Action<Quote>, onTrade : Action<Trade>, onOpenInterest : Action<OpenInterest>) =
+type Client(onTrade : Action<Trade>, onQuote : Action<Quote>, onOpenInterest : Action<OpenInterest>) =
     let [<Literal>] heartbeatMessage : string = "{\"topic\":\"phoenix\",\"event\":\"heartbeat\",\"payload\":{},\"ref\":null}"
     let [<Literal>] heartbeatResponse : string = "{\"topic\":\"phoenix\",\"ref\":null,\"payload\":{\"status\":\"ok\",\"response\":{}},\"event\":\"phx_reply\"}"
     let [<Literal>] errorResponse : string = "\"status\":\"error\""
@@ -92,10 +92,10 @@ type Client(onQuote : Action<Quote>, onTrade : Action<Trade>, onOpenInterest : A
             TotalVolume = BitConverter.ToUInt64(bytes.Slice(42, 8))
         }
 
-    let parseQuote (bytes: ReadOnlySpan<byte>, msgType: MessageType) : Quote =
+    let parseQuote (bytes: ReadOnlySpan<byte>) : Quote =
         {
             Symbol = Encoding.ASCII.GetString(bytes.Slice(0, 21))
-            Type = msgType
+            Type = enum<QuoteType> (int32 (bytes.Item(21)))
             Price = BitConverter.ToDouble(bytes.Slice(22, 8))
             Size = BitConverter.ToUInt32(bytes.Slice(30, 4))
             Timestamp = BitConverter.ToDouble(bytes.Slice(34, 8))
@@ -118,7 +118,7 @@ type Client(onQuote : Action<Quote>, onTrade : Action<Trade>, onOpenInterest : A
             trade |> onTrade.Invoke
         | MessageType.Ask | MessageType.Bid -> 
             let chunk: ReadOnlySpan<byte> = new ReadOnlySpan<byte>(bytes, startIndex, 42)
-            let quote: Quote = parseQuote(chunk, msgType)
+            let quote: Quote = parseQuote(chunk)
             startIndex <- startIndex + 42
             quote |> onQuote.Invoke
         | MessageType.OpenInterest -> 
@@ -126,7 +126,7 @@ type Client(onQuote : Action<Quote>, onTrade : Action<Trade>, onOpenInterest : A
             let openInterest = parseOpenInterest(chunk)
             startIndex <- startIndex + 34
             openInterest |> onOpenInterest.Invoke
-        | _ -> failwithf "Invalid MessageType: %i" (int32 bytes.[startIndex + 21])
+        | _ -> Log.Warning("Invalid MessageType: {0}", (int32 bytes.[startIndex + 21]))
 
     let heartbeatFn () =
         let ct = ctSource.Token
@@ -149,11 +149,13 @@ type Client(onQuote : Action<Quote>, onTrade : Action<Trade>, onOpenInterest : A
         while not (ct.IsCancellationRequested) do
             try
                 if data.TryTake(&datum,1000) then
-                    // these are grouped (many) messages.  The first byte tells us how many there are.  from there, check the type at index 21 to know how many bytes each message has.
+                    // These are grouped (many) messages.
+                    // The first byte tells us how many there are.
+                    // From there, check the type at index 21 to know how many bytes each message has.
                     let cnt = datum.[0] |> int
                     let mutable startIndex = 1
                     for _ in 1 .. cnt do
-                        parseSocketMessage(datum, &startIndex)                        
+                        parseSocketMessage(datum, &startIndex)
             with :? OperationCanceledException -> ()
 
     let threads : Thread[] = Array.init config.NumThreads (fun _ -> new Thread(new ThreadStart(threadFn)))
@@ -353,6 +355,12 @@ type Client(onQuote : Action<Quote>, onTrade : Action<Trade>, onOpenInterest : A
             doBackoff(reconnectFn)
         let _token : string = getToken()
         initializeWebSockets(_token)
+
+    new (onTrade : Action<Trade>, onQuote : Action<Quote>) =
+        Client(onTrade, onQuote, Action<OpenInterest>(fun (_:OpenInterest) -> ()))
+
+    new (onTrade : Action<Trade>) =
+        Client(onTrade, Action<Quote>(fun (_:Quote) -> ()), Action<OpenInterest>(fun (_:OpenInterest) -> ()))
 
     member _.Join() : unit =
         while not(allReady()) do Thread.Sleep(1000)
