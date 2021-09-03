@@ -36,7 +36,7 @@ type internal WebSocketState(ws: WebSocket) =
 
     member _.Reset() : unit = lastReset <- DateTime.Now
 
-type Client(onQuote : Action<Quote>) =
+type Client(onTrade : Action<Trade>, onQuote : Action<Quote>, onOpenInterest : Action<OpenInterest>) =
     let [<Literal>] heartbeatMessage : string = "{\"topic\":\"phoenix\",\"event\":\"heartbeat\",\"payload\":{},\"ref\":null}"
     let [<Literal>] heartbeatResponse : string = "{\"topic\":\"phoenix\",\"ref\":null,\"payload\":{\"status\":\"ok\",\"response\":{}},\"event\":\"phx_reply\"}"
     let [<Literal>] errorResponse : string = "\"status\":\"error\""
@@ -83,29 +83,50 @@ type Client(onQuote : Action<Quote>) =
         | Provider.MANUAL_FIREHOSE -> 6
         | _ -> failwith "Provider not specified!"
 
-    let parseMessage (bytes: byte[]) : Quote =
+    let parseTrade (bytes: ReadOnlySpan<byte>) : Trade =
         {
-            Symbol = Encoding.ASCII.GetString(bytes, 0, 21)
-            Type = enum<QuoteType> (int32 bytes.[21])
-            Price = BitConverter.ToDouble(bytes, 22)
-            Size = BitConverter.ToUInt32(bytes, 30)
-            Timestamp = BitConverter.ToDouble(bytes, 34)
+            Symbol = Encoding.ASCII.GetString(bytes.Slice(0, 21))
+            Price = BitConverter.ToDouble(bytes.Slice(22, 8))
+            Size = BitConverter.ToUInt32(bytes.Slice(30, 4))
+            Timestamp = BitConverter.ToDouble(bytes.Slice(34, 8))
+            TotalVolume = BitConverter.ToUInt64(bytes.Slice(42, 8))
         }
 
-    let parseMessages(bytes: byte[]) : Quote[] =
-        let quoteCount : int = int32 bytes.[0]
-        [|
-            for i in 0 .. quoteCount - 1 do
-                let offset : int = 1 + 42 * i
-                yield
-                    {
-                        Symbol = Encoding.ASCII.GetString(bytes, offset, 21)
-                        Type = enum<QuoteType> (int32 bytes.[offset + 21])
-                        Price = BitConverter.ToDouble(bytes, offset + 22)
-                        Size = BitConverter.ToUInt32(bytes, offset + 30)
-                        Timestamp = BitConverter.ToDouble(bytes, offset + 34)
-                    }
-        |]
+    let parseQuote (bytes: ReadOnlySpan<byte>) : Quote =
+        {
+            Symbol = Encoding.ASCII.GetString(bytes.Slice(0, 21))
+            Type = enum<QuoteType> (int32 (bytes.Item(21)))
+            Price = BitConverter.ToDouble(bytes.Slice(22, 8))
+            Size = BitConverter.ToUInt32(bytes.Slice(30, 4))
+            Timestamp = BitConverter.ToDouble(bytes.Slice(34, 8))
+        }
+
+    let parseOpenInterest (bytes: ReadOnlySpan<byte>) : OpenInterest =
+        {
+            Symbol = Encoding.ASCII.GetString(bytes.Slice(0, 21))
+            OpenInterest = BitConverter.ToInt32(bytes.Slice(22, 4))
+            Timestamp = BitConverter.ToDouble(bytes.Slice(26, 8))
+        }
+
+    let parseSocketMessage (bytes: byte[], startIndex: byref<int>) : unit =
+        let msgType = enum<MessageType> (int32 bytes.[startIndex + 21])
+        match msgType with
+        | MessageType.Trade -> 
+            let chunk: ReadOnlySpan<byte> = new ReadOnlySpan<byte>(bytes, startIndex, 50)
+            let trade: Trade = parseTrade(chunk)
+            startIndex <- startIndex + 50
+            trade |> onTrade.Invoke
+        | MessageType.Ask | MessageType.Bid -> 
+            let chunk: ReadOnlySpan<byte> = new ReadOnlySpan<byte>(bytes, startIndex, 42)
+            let quote: Quote = parseQuote(chunk)
+            startIndex <- startIndex + 42
+            quote |> onQuote.Invoke
+        | MessageType.OpenInterest -> 
+            let chunk: ReadOnlySpan<byte> = new ReadOnlySpan<byte>(bytes, startIndex, 34)
+            let openInterest = parseOpenInterest(chunk)
+            startIndex <- startIndex + 34
+            openInterest |> onOpenInterest.Invoke
+        | _ -> Log.Warning("Invalid MessageType: {0}", (int32 bytes.[startIndex + 21]))
 
     let heartbeatFn () =
         let ct = ctSource.Token
@@ -124,35 +145,20 @@ type Client(onQuote : Action<Quote>) =
 
     let threadFn () : unit =
         let ct = ctSource.Token
+        let mutable datum : byte[] = Array.empty<byte>
         while not (ct.IsCancellationRequested) do
             try
-                let mutable datum : byte[] = Array.empty<byte>
-                if data.TryTake(&datum, 1000)
-                then
-                    let quote : Quote = parseMessage(datum)
-                    Log.Debug("Invoking 'onQuote'")
-                    onQuote.Invoke(quote)
+                if data.TryTake(&datum,1000) then
+                    // These are grouped (many) messages.
+                    // The first byte tells us how many there are.
+                    // From there, check the type at index 21 to know how many bytes each message has.
+                    let cnt = datum.[0] |> int
+                    let mutable startIndex = 1
+                    for _ in 1 .. cnt do
+                        parseSocketMessage(datum, &startIndex)
             with :? OperationCanceledException -> ()
 
-    let firehoseThreadFn () : unit =
-        let ct = ctSource.Token
-        while not (ct.IsCancellationRequested) do
-            try
-                let mutable datum : byte[] = Array.empty<byte>
-                if data.TryTake(&datum, 1000)
-                then
-                    let quotes : Quote[] = parseMessages(datum)
-                    Log.Debug("Invoking 'onQuote'")
-                    for quote in quotes do onQuote.Invoke(quote)
-            with :? OperationCanceledException -> ()
-
-    let threads : Thread[] = Array.init config.NumThreads (fun _ -> 
-        new Thread(
-            new ThreadStart(
-                if config.Provider = Provider.MANUAL_FIREHOSE ||
-                    config.Provider = Provider.OPRA_FIREHOSE
-                then firehoseThreadFn
-                else threadFn)))
+    let threads : Thread[] = Array.init config.NumThreads (fun _ -> new Thread(new ThreadStart(threadFn)))
 
     let doBackoff(fn: unit -> bool) : unit =
         let mutable i : int = 0
@@ -327,6 +333,7 @@ type Client(onQuote : Action<Quote>) =
                 Log.Information("Websocket {0} - Leaving channel: {1:l} (trades only = {2})", index, symbol, lastOnly)
                 try wss.WebSocket.Send(message)
                 with _ -> () )
+
     do
         tryReconnect <- fun (index:int) () ->
             let reconnectFn () : bool =
@@ -348,6 +355,12 @@ type Client(onQuote : Action<Quote>) =
             doBackoff(reconnectFn)
         let _token : string = getToken()
         initializeWebSockets(_token)
+
+    new (onTrade : Action<Trade>, onQuote : Action<Quote>) =
+        Client(onTrade, onQuote, Action<OpenInterest>(fun (_:OpenInterest) -> ()))
+
+    new (onTrade : Action<Trade>) =
+        Client(onTrade, Action<Quote>(fun (_:Quote) -> ()), Action<OpenInterest>(fun (_:OpenInterest) -> ()))
 
     member _.Join() : unit =
         while not(allReady()) do Thread.Sleep(1000)

@@ -9,27 +9,65 @@ namespace SampleApp
 	{
 		private static Client client = null;
 		private static Timer timer = null;
-		private static readonly ConcurrentDictionary<string, int> symbols = new ConcurrentDictionary<string, int>(5, 1_500_000);
-		private static int maxCount = 0;
+		private static readonly ConcurrentDictionary<string, int> trades = new ConcurrentDictionary<string, int>(5, 1_500_000);
+		private static readonly ConcurrentDictionary<string, int> quotes = new ConcurrentDictionary<string, int>(5, 1_500_000);
+		private static int maxTradeCount = 0;
+		private static int maxQuoteCount = 0;
+		private static int openInterestCount = 0;
+		private static Trade maxCountTrade;
 		private static Quote maxCountQuote;
+		private static OpenInterest maxOpenInterest;
+
 		private static readonly object obj = new object();
-		
+
 		static void OnQuote(Quote quote)
 		{
 			string key = quote.Symbol + ":" + quote.Type;
-			if (!symbols.ContainsKey(key)) {
-				symbols[key] = 1;
-			} else
+			if (!quotes.ContainsKey(key))
 			{
-				symbols[key]++;
+				quotes[key] = 1;
 			}
-			if (symbols[key] > maxCount)
+			else
+			{
+				quotes[key]++;
+			}
+			if (quotes[key] > maxQuoteCount)
 			{
 				lock (obj)
 				{
-					maxCount++;
+					maxQuoteCount++;
 					maxCountQuote = quote;
 				}
+			}
+		}
+
+		static void OnTrade(Trade trade)
+		{
+			string key = trade.Symbol + ":trade";
+			if (!trades.ContainsKey(key))
+			{
+				trades[key] = 1;
+			}
+			else
+			{
+				trades[key]++;
+			}
+			if (trades[key] > maxTradeCount)
+			{
+				lock (obj)
+				{
+					maxTradeCount++;
+					maxCountTrade = trade;
+				}
+			}
+		}
+
+		static void OnOpenInterest(OpenInterest openInterest)
+		{
+			openInterestCount++;
+			if (openInterest.OpenInterest > maxOpenInterest.OpenInterest)
+			{
+				maxOpenInterest = openInterest;
 			}
 		}
 
@@ -38,13 +76,17 @@ namespace SampleApp
 			Client client = (Client) obj;
 			Tuple<Int64, Int64, int> stats = client.GetStats();
 			Client.Log("Data Messages = {0}, Text Messages = {1}, Queue Depth = {2}", stats.Item1, stats.Item2, stats.Item3);
-			if (maxCount > 0)
+			if (maxTradeCount > 0)
 			{
-				Client.Log("Most active symbol: {0}:{1} ({2} updates)", maxCountQuote.Symbol, maxCountQuote.Type, maxCount);
+				Client.Log("Most active trade symbol: {0:l} ({1} updates)", maxCountTrade.Symbol, maxTradeCount);
 			}
-			if (!maxCountQuote.Equals(new Quote())) {
-				Quote quote = maxCountQuote;
-				Client.Log("{0} (type = {1}, strike price = {2}, isPut = {3}, isCall = {4}, expiration = {5})", quote.Symbol, quote.Type, quote.GetStrikePrice(), quote.IsPut(), quote.IsCall(), quote.GetExpirationDate());
+			if (maxQuoteCount > 0)
+			{
+				Client.Log("Most active quote symbol: {0:l}:{1} ({2} updates)", maxCountQuote.Symbol, maxCountQuote.Type, maxQuoteCount);
+			}
+			if (openInterestCount > 0)
+			{
+				Client.Log("{0} open interest updates. Highest open interest symbol: {1:l} ({2})", openInterestCount, maxOpenInterest.Symbol, maxOpenInterest.OpenInterest);
 			}
 		}
 
@@ -59,12 +101,10 @@ namespace SampleApp
 		static void Main(string[] args)
 		{
 			Client.Log("Starting sample app");
-			client = new Client(OnQuote);
+			client = new Client(OnTrade, OnQuote, OnOpenInterest);
 			timer = new Timer(TimerCallback, client, 10000, 10000);
 			client.Join();
 			Console.CancelKeyPress += new ConsoleCancelEventHandler(Cancel);
-		}
-
-		
+		}		
 	}
 }

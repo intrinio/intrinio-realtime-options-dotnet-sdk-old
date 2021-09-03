@@ -10,8 +10,13 @@ type Provider =
     | MANUAL = 3
     | MANUAL_FIREHOSE = 4
 
-type QuoteType =
+type MessageType =
     | Trade = 0
+    | Ask = 1
+    | Bid = 2
+    | OpenInterest = 3
+
+type QuoteType =
     | Ask = 1
     | Bid = 2
 
@@ -29,6 +34,7 @@ type [<Struct>] Quote =
         Size : uint32
         Timestamp : float
     }
+
     member this.GetStrikePrice() : float32 =
         let whole : uint16 = (uint16 this.Symbol.[13] - uint16 '0') * 10_000us + (uint16 this.Symbol.[14] - uint16 '0') * 1000us + (uint16 this.Symbol.[15] - uint16 '0') * 100us + (uint16 this.Symbol.[16] - uint16 '0') * 10us + (uint16 this.Symbol.[17] - uint16 '0')
         let part : float32 = (float32 (uint8 this.Symbol.[18] - uint8 '0')) * 0.1f + (float32 (uint8 this.Symbol.[19] - uint8 '0')) * 0.01f + (float32 (uint8 this.Symbol.[20] - uint8 '0')) * 0.001f
@@ -44,9 +50,46 @@ type [<Struct>] Quote =
 
     override this.ToString() : string =
         "Quote (" +
-        "Type: " + QuoteType.GetName(this.Type) +
+        "Type: " + MessageType.GetName(this.Type) +
         ", Symbol: " + this.Symbol +
         ", Price: " + this.Price.ToString("f") +
         ", Size: " + this.Size.ToString() +
         ", Timestamp: " + this.Timestamp.ToString("f") +
         ")"
+
+type [<Struct>] Trade =
+    {
+        Symbol : string
+        Price : float
+        Size : uint32
+        TotalVolume : uint64
+        Timestamp : float
+    }
+    member this.GetStrikePrice() : float32 =
+        let whole : uint16 = (uint16 this.Symbol.[13] - uint16 '0') * 10_000us + (uint16 this.Symbol.[14] - uint16 '0') * 1000us + (uint16 this.Symbol.[15] - uint16 '0') * 100us + (uint16 this.Symbol.[16] - uint16 '0') * 10us + (uint16 this.Symbol.[17] - uint16 '0')
+        let part : float32 = (float32 (uint8 this.Symbol.[18] - uint8 '0')) * 0.1f + (float32 (uint8 this.Symbol.[19] - uint8 '0')) * 0.01f + (float32 (uint8 this.Symbol.[20] - uint8 '0')) * 0.001f
+        (float32 whole) + part
+
+    member this.IsPut() : bool = this.Symbol.[12] = 'P'
+
+    member this.IsCall() : bool = this.Symbol.[12] = 'C'
+
+    member this.GetExpirationDate() : DateTime = DateTime.ParseExact(this.Symbol.Substring(6, 6), "yyMMdd", CultureInfo.InvariantCulture)
+
+    member this.GetUnderlyingSymbol() : string = this.Symbol.Substring(0, 6).TrimEnd('_')
+
+    override this.ToString() : string =
+        "Trade (" +
+        "Symbol: " + this.Symbol +
+        ", Price: " + this.Price.ToString("f") +
+        ", Size: " + this.Size.ToString() +
+        ", TotalVolume: " + this.TotalVolume.ToString() +
+        ", Timestamp: " + this.Timestamp.ToString("f") +
+        ")"
+
+type [<Struct>] OpenInterest =
+    {
+        Symbol : string
+        OpenInterest : int32
+        Timestamp : float
+    }
